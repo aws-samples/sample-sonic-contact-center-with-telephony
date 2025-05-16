@@ -1,0 +1,28 @@
+{
+  "name": "ContactCenterOS",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node_modules/.bin/vite",
+    "client": "node_modules/.bin/vite",
+    "client:build": "node_modules/.bin/vite build",
+    "client:preview": "node_modules/.bin/vite preview",
+    "server": "ts-node src/server/src/server.ts"
+  },
+  "author": "aws-telco-prototyping",
+  "license": "UNLICENSED",
+  "workspaces": [
+    "src/server"
+  ],
+  "devDependencies": {
+    "vite": "^6.1.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.758.0",
+    "@aws-sdk/credential-providers": "^3.768.0",
+    "aws-sdk": "^2.1692.0",
+    "axios": "^1.8.4",
+    "cdk-nag": "^2.35.89"
+  }
+}
