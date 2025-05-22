@@ -64,3 +64,42 @@ interface ActiveSession {
   sessionId: string;
   session: Session;
 }
+
+interface Result {
+  content: string;
+  location: string;
+  score: number;
+  metadata?: Record<string, any>;
+}
+
+interface OutputData {
+  query: string;
+  results: Result[];
+  result_count: number;
+}
+
+interface SessionData {
+  queue: Array<any>;
+  queueSignal: Subject<void>;
+  closeSignal: Subject<void>;
+  responseSubject: Subject<any>;
+  toolUseContent: any;
+  toolUseId: string;
+  toolName: string;
+  responseHandlers: Map<string, (data: any) => void>;
+  promptName: string;
+  inferenceConfig: InferenceConfig;
+  isActive: boolean;
+  isPromptStartSent: boolean;
+  isAudioContentStartSent: boolean;
+  audioContentId: string;
+}
+
+interface NovaSonicBidirectionalStreamClientConfig {
+  requestHandlerConfig?:
+    | NodeHttp2HandlerOptions
+    | Provider<NodeHttp2HandlerOptions | void>;
+  clientConfig: Partial<BedrockRuntimeClientConfig>;
+  inferenceConfig?: InferenceConfig;
+}
+

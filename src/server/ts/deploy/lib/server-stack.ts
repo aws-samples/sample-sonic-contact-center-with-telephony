@@ -3,17 +3,13 @@ import { Construct } from "constructs";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
-import * as route53 from "aws-cdk-lib/aws-route53";
-import * as targets from "aws-cdk-lib/aws-route53-targets";
-import * as path from "path";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
-import * as elbv2_targets from "aws-cdk-lib/aws-elasticloadbalancingv2-targets";
 
 export class ServerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // IP address for allowlisting.
+    // IP address for whitelisting.
     const myIp = process.env.MY_IP!;
 
     // Domain name for SSL certificate (required for SSL)
@@ -22,7 +18,7 @@ export class ServerStack extends cdk.Stack {
       throw new Error("SERVER_URL environment variable is required for SSL");
     }
 
-    const vpc = new ec2.Vpc(this, "ServerVpc", {
+    const vpc = new ec2.Vpc(this, "Vpc", {
       maxAzs: 2,
       natGateways: 0,
       subnetConfiguration: [
@@ -33,7 +29,7 @@ export class ServerStack extends cdk.Stack {
       ],
     });
 
-    const securityGroup = new ec2.SecurityGroup(this, "ServerSecurityGroup", {
+    const securityGroup = new ec2.SecurityGroup(this, "SecurityGroup", {
       vpc,
       description: "Allow SSH and application traffic",
       allowAllOutbound: true,
@@ -51,11 +47,11 @@ export class ServerStack extends cdk.Stack {
     );
     securityGroup.addIngressRule(
       ec2.Peer.ipv4(myIp),
-      ec2.Port.tcp(3000),
+      ec2.Port.tcp(3001),
       "Allow application port access from my IP for testing"
     );
 
-    const role = new iam.Role(this, "ServerInstanceRole", {
+    const role = new iam.Role(this, "InstanceRole", {
       assumedBy: new iam.ServicePrincipal("ec2.amazonaws.com"),
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName(
@@ -75,7 +71,7 @@ export class ServerStack extends cdk.Stack {
       keyPairName: process.env.EC2_KEY_PAIR_NAME!,
       type: ec2.KeyPairType.RSA,
     });
-    const instance = new ec2.Instance(this, "ServerInstance", {
+    const instance = new ec2.Instance(this, "Instance", {
       vpc,
       instanceType: ec2.InstanceType.of(
         ec2.InstanceClass.T3,
@@ -90,8 +86,7 @@ export class ServerStack extends cdk.Stack {
       },
     });
 
-    // Create an Application Load Balancer
-    const alb = new elbv2.ApplicationLoadBalancer(this, "ServerALB", {
+    const alb = new elbv2.ApplicationLoadBalancer(this, "Alb", {
       vpc,
       internetFacing: true,
       securityGroup,
@@ -100,16 +95,13 @@ export class ServerStack extends cdk.Stack {
       },
     });
 
-    // Create SSL certificate
-    const certificate = new acm.Certificate(this, "ServerCertificate", {
+    const sslCertificate = new acm.Certificate(this, "Certificate", {
       domainName,
       validation: acm.CertificateValidation.fromDns(),
     });
-
-    // Create HTTPS listener
     const httpsListener = alb.addListener("HttpsListener", {
       port: 443,
-      certificates: [certificate],
+      certificates: [sslCertificate],
       protocol: elbv2.ApplicationProtocol.HTTPS,
       open: true,
     });
@@ -117,10 +109,10 @@ export class ServerStack extends cdk.Stack {
     // Add target group for the instance
     const targetGroup = new elbv2.ApplicationTargetGroup(
       this,
-      "ServerTargetGroup",
+      "TargetGroup",
       {
         vpc,
-        port: 3000,
+        port: 3001,
         protocol: elbv2.ApplicationProtocol.HTTP,
         // targets: [new targets.InstanceTarget(instance)],
         healthCheck: {

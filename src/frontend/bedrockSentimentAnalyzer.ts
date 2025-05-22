@@ -7,7 +7,7 @@ import config from "./config";
 
 function initializeBedrockClient() {
   return new BedrockRuntimeClient({
-    region: config.aws.region || "us-east-1",
+    region: config.aws.region,
     credentials: {
       accessKeyId: config.aws.accessKeyId,
       secretAccessKey: config.aws.secretAccessKey,

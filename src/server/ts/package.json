@@ -20,7 +20,9 @@
     "http": "^0.0.1-security",
     "rxjs": "^7.8.2",
     "s": "^1.0.0",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "ws": "^8.18.2",
+    "xmldom": "^0.6.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",

@@ -1,20 +1,18 @@
-import * as fs from "fs";
 import express, { Request, Response } from "express";
 import bodyParser from "body-parser";
 import expressWs from "express-ws";
 import * as https from "https";
-import * as path from "path";
 import { fromEnv } from "@aws-sdk/credential-providers";
 import { NovaSonicBidirectionalStreamClient } from "./client";
 import { Buffer } from "node:buffer";
 import WebSocket from "ws";
 import {
   Session,
-  ActiveSession,
   SessionEventData,
-  WebhookResponse,
 } from "./types";
 import { v4 as uuidv4 } from "uuid";
+import { VonageIntegration } from "./telephony/vonage";
+// import { TwilioIntegration } from "./telephony/twilio";
 
 const app = express();
 const wsInstance = expressWs(app);
@@ -31,8 +29,11 @@ const bedrockClient = new NovaSonicBidirectionalStreamClient({
   },
 });
 
-const useVonage: boolean = true;
+// Integrations
 const useJson: boolean = true;
+const vonage = new VonageIntegration(true)
+vonage.configureRoutes(app)
+// new TwilioIntegration(useTwilio).configureRoutes(app)
 
 /* Periodically check for and close inactive sessions (every minute).
  * Sessions with no activity for over 5 minutes will be force closed
@@ -48,7 +49,7 @@ setInterval(() => {
     if (now - lastActivity > fiveMinsInMs) {
       console.log(`Closing inactive session ${sessionId} due to inactivity.`);
       try {
-        bedrockClient.forceCloseSession(sessionId);
+        bedrockClient.closeSession(sessionId);
       } catch (error: unknown) {
         console.error(
           `Error force closing inactive session ${sessionId}:`,
@@ -125,41 +126,23 @@ function setUpEventHandlersForChannel(session: Session, channelId: string) {
     if (useJson) {
       const message = JSON.stringify({ event: { audioOutput: { ...data } } });
       clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(message);
-        }
+        if (client.readyState === WebSocket.OPEN) client.send(message);
       });
     }
 
-    if (useVonage) {
-      let combinedSamples: Int16Array;
-      if (audioBuffer) {
-        combinedSamples = new Int16Array(
-          audioBuffer.length + newPcmSamples.length
-        );
-        combinedSamples.set(audioBuffer);
-        combinedSamples.set(newPcmSamples, audioBuffer.length);
-      } else {
-        combinedSamples = newPcmSamples;
-      }
+    let offset = 0;
+    while (offset + SAMPLES_PER_CHUNK <= newPcmSamples.length) {
+      const chunk = newPcmSamples.slice(offset, offset + SAMPLES_PER_CHUNK);
 
-      let offset = 0;
-      while (offset + SAMPLES_PER_CHUNK <= combinedSamples.length) {
-        const chunk = combinedSamples.slice(offset, offset + SAMPLES_PER_CHUNK);
+      clients?.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) client.send(chunk);
+      });
 
-        // Send to all clients in the channel
-        clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(chunk);
-          }
-        });
-
-        offset += SAMPLES_PER_CHUNK;
-      }
-
-      audioBuffer =
-        offset < combinedSamples.length ? combinedSamples.slice(offset) : null;
+      offset += SAMPLES_PER_CHUNK;
     }
+
+    audioBuffer =
+      offset < newPcmSamples.length ? newPcmSamples.slice(offset) : null;
   });
 }
 
@@ -169,7 +152,6 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
   console.log(`Client requesting connection to channel: ${channelId}`);
 
   const sendError = (message: string, details: string) => {
-    // console.error("Error:", details);
     ws.send(JSON.stringify({ event: "error", data: { message, details } }));
   };
 
@@ -182,7 +164,8 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
       if (channelStreams.has(channelId)) {
         console.log(`Client joining existing channel: ${channelId}`);
         session = channelStreams.get(channelId)!;
-      } else { // Create new session for this channel
+      } else {
+        // Create new session for this channel
         console.log(`Creating new channel: ${channelId}`);
         session = bedrockClient.createStreamSession(channelId);
         bedrockClient.initiateSession(channelId);
@@ -193,7 +176,17 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
         await session.setupPromptStart();
         await session.setupSystemPrompt(
           undefined,
-          "You are Telly, an AI assistant having a voice conversation. Keep responses concise and conversational. You can help this customer with lots of things, including getting their account info, managing billing, and doing device trade-ins"
+          `You are Telly, an AI assistant having a voice conversation. Keep responses concise and conversational.
+          You must always check what the next script item is, and you must always use the script as a starting
+          point to decide what to respond the user and what tools to use. You must always rely on your script 
+          to find what to say. You must not change or embellish the script; just present the script to the user,
+          and present them with their options if there are any. No matter what the user says, you should start 
+          by checking the script. You must not tell the user about the script. You must always present the options
+          to the user with numbers. If the script tells you to check your tools, you are then allowed to deviate
+          from the script.
+          You can also cook scallops.
+          Before every response to the user, you MUST check if you have any messages to pass on to the user.
+          `
         );
         await session.setupStartAudio();
 
@@ -238,7 +231,7 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
       let audioBuffer: Buffer | undefined;
       try {
         const jsonMsg = JSON.parse(msg.toString());
-        console.log("Event received of type:", jsonMsg.type);
+        if (jsonMsg.type) console.log("Event received of type:", jsonMsg.type);
         switch (jsonMsg.type) {
           case "promptStart":
             await session.setupPromptStart();
@@ -258,13 +251,11 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
             break;
         }
       } catch (e) {
-        if (useVonage) {
-          audioBuffer = Buffer.from(msg as Buffer);
-          await session.streamAudio(audioBuffer);
-        }
+        if (vonage.isOn) await vonage.processAudioData(msg as Buffer, session)
       } finally {
         if (useJson) {
           const msgJson = JSON.parse(msg.toString());
+          // TODO: We shouldn't do this.
           audioBuffer = Buffer.from(msgJson.event.audioInput.content, "base64");
           await session.streamAudio(audioBuffer);
         }
@@ -314,7 +305,7 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
           } catch (error) {
             console.error(`Error cleaning up channel ${channelId}:`, error);
             try {
-              bedrockClient.forceCloseSession(channelId);
+              bedrockClient.closeSession(channelId);
               console.log(`Force closed session for channel: ${channelId}`);
             } catch (e) {
               console.error(
@@ -339,7 +330,7 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
 
 /* SERVER LOGIC */
 
-const port: number = parseInt(process.env.PORT || "3000");
+const port: number = 3001;
 const server = app.listen(port, () =>
   console.log(`Original server listening on port ${port}`)
 );
@@ -368,26 +359,15 @@ process.on("SIGINT", async () => {
     for (const [channelId, session] of channelStreams.entries()) {
       console.log(`Closing session for channel ${channelId} during shutdown`);
 
-      sessionPromises.push(
-        bedrockClient.closeSession(channelId).catch((error: unknown) => {
-          console.error(
-            `Error closing session for channel ${channelId} during shutdown:`,
-            error
-          );
-          bedrockClient.forceCloseSession(channelId);
-        })
-      );
+      sessionPromises.push(bedrockClient.closeSession(channelId));
 
       const clients = channelClients.get(channelId) || new Set();
       clients.forEach((ws) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.close();
-        }
+        if (ws.readyState === WebSocket.OPEN) ws.close();
       });
     }
 
     await Promise.all(sessionPromises);
-
     await Promise.all([
       new Promise((resolve) => server.close(resolve)),
       new Promise((resolve) => httpsServer.close(resolve)),
@@ -414,33 +394,3 @@ app.get("/channels", (req: Request, res: Response) => {
   }
   res.status(200).json({ channels });
 });
-
-/* VONAGE SERVER LOGIC */
-
-if (useVonage) {
-  app.get("/webhooks/answer", (req: Request, res: Response) => {
-    const nccoResponse: WebhookResponse[] = [
-      {
-        action: "talk",
-        text: "Hello"//, welcome to MyTelco's customer support. Before we begin, please provide your phone number?",
-      },
-      {
-        action: "connect",
-        from: "Vonage",
-        endpoint: [
-          {
-            type: "websocket",
-            uri: `wss://${req.hostname}/socket`,
-            "content-type": "audio/l16;rate=16000",
-          },
-        ],
-      },
-    ];
-    res.status(200).json(nccoResponse);
-  });
-
-  app.post("/webhooks/events", (req: Request, res: Response) => {
-    console.log(req.body);
-    res.sendStatus(200);
-  });
-}

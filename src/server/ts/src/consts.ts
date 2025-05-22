@@ -15,27 +15,6 @@ export const DefaultAudioInputConfiguration = {
   channelCount: 1,
 };
 
-export const DefaultToolSchema = JSON.stringify({
-  type: "object",
-  properties: {},
-  required: [],
-});
-
-export const WeatherToolSchema = JSON.stringify({
-  type: "object",
-  properties: {
-    latitude: {
-      type: "string",
-      description: "Geographical WGS84 latitude of the location.",
-    },
-    longitude: {
-      type: "string",
-      description: "Geographical WGS84 longitude of the location.",
-    },
-  },
-  required: ["latitude", "longitude"],
-});
-
 export const DefaultTextConfiguration = {
   mediaType: "text/plain" as TextMediaType,
 };

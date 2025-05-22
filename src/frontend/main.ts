@@ -10,6 +10,7 @@ import {
   SentimentResult,
   HistoryItem,
 } from "./types";
+import { synthesizeSpeech } from "./tts";
 
 let wsManager: WebSocketEventManager | null = null;
 let sessionTime: number = 0;
@@ -18,16 +19,14 @@ let isRecording: boolean = false;
 let conversationData: ConversationMessage[] = [];
 let currentMessageId: number = 1;
 let lastHistoryLength: number = 0;
-
-// Global chart objects
-let sentimentLineChart: Chart | null = null;
-let sentimentDonutChart: Chart | null = null;
+let sentimentLineChart = null;
+let sentimentDonutChart = null;
 
 // These should be .env vars
-const SERVER_URL = "54.91.73.218:3000";
-let microphoneIsMuted = true;
-
+const SERVER_URL = "localhost:3001"; //"54.91.73.218:3000";
+let microphoneIsMuted = false;
 const WS_URL = `ws://${SERVER_URL}/socket`;
+
 const GREEN = "34, 197, 94"; // green
 const ORANGE = "249, 115, 22"; // orange
 const YELLOW = "234, 179, 8"; // yellow
@@ -149,6 +148,57 @@ function initializeCharts(): void {
 }
 
 function initializeDashboard(): void {
+  function addPollyEventListeners() {
+    document.getElementById("voice-select")?.addEventListener("change", (e) => {
+      selectedVoice = e.target.value;
+    });
+
+    document
+      .getElementById("tts-button")
+      ?.addEventListener("click", async () => {
+        try {
+          const text = document.getElementById("tts-text")?.value;
+          if (text && wsManager) {
+            const audioData = await synthesizeSpeech(text);
+
+            if (audioData && wsManager) {
+              const audioBytes =
+                audioData instanceof Uint8Array
+                  ? audioData
+                  : new Uint8Array(audioData);
+
+              const chunkSize = 1024;
+
+              wsManager.startUserTalking();
+              for (let i = 0; i < audioBytes.length; i += chunkSize) {
+                const end = Math.min(i + chunkSize, audioBytes.length);
+                const chunk = audioBytes.slice(i, end);
+
+                const pcmData = new Int16Array(chunk.length / 2);
+                for (let j = 0; j < chunk.length; j += 2) {
+                  // Combine two bytes to create 16-bit PCM value
+                  pcmData[j / 2] = (chunk[j + 1] << 8) | chunk[j];
+                }
+
+                const base64data = btoa(
+                  String.fromCharCode.apply(
+                    null,
+                    new Uint8Array(pcmData.buffer)
+                  )
+                );
+
+                console.log("sending");
+                wsManager.sendAudioChunk(base64data);
+              }
+              wsManager.stopUserTalking();
+            }
+          }
+        } catch (e) {
+          wsManager.stopUserTalking();
+        }
+      });
+  }
+
   sentimentData = Array(20)
     .fill(null)
     .map((_, index) => ({
@@ -171,6 +221,8 @@ function initializeDashboard(): void {
   document
     .getElementById("stop-button")
     ?.addEventListener("click", stopStreaming);
+
+  addPollyEventListeners();
 }
 
 async function updateTranscript(history: HistoryItem[] | null): Promise<void> {
@@ -472,7 +524,6 @@ async function startStreaming(): Promise<void> {
   if (startButton) startButton.disabled = true;
   if (stopButton) stopButton.disabled = false;
   isRecording = true;
-  updateRecordingIndicator(true);
 
   // Get the session ID if provided
   const sessionId = sessionIdInput?.value.trim() || "";
@@ -499,10 +550,11 @@ async function startStreaming(): Promise<void> {
   if (wsManager) wsManager.resetTalkTimeMetrics();
 
   try {
+    const sampleRate = 16000; // kHz
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1, // mono
-        sampleRate: 16000, // kHz
+        sampleRate,
         sampleSize: 16, // bit
         echoCancellation: true,
         noiseSuppression: true,
@@ -511,7 +563,7 @@ async function startStreaming(): Promise<void> {
     });
 
     const audioContext = new AudioContext({
-      sampleRate: 16000,
+      sampleRate,
       latencyHint: "interactive",
     });
 
@@ -574,12 +626,13 @@ async function startStreaming(): Promise<void> {
         speechSampleCount = 0;
       }
 
-      // Convert to base64
-      // TODO: We really shouldn't do this.
+      // Convert to base64. TODO: We really shouldn't do this.
       const base64data = btoa(
         String.fromCharCode.apply(null, new Uint8Array(pcmData.buffer))
       );
-      if (wsManager && !microphoneIsMuted) wsManager.sendAudioChunk(base64data);
+      if (wsManager && !microphoneIsMuted) {
+        wsManager.sendAudioChunk(base64data);
+      }
     };
 
     (window as any).audioCleanup = () => {
@@ -615,7 +668,6 @@ function stopStreaming(): void {
   if (stopButton) stopButton.disabled = true;
 
   isRecording = false;
-  updateRecordingIndicator(false);
   updateStatus("Disconnected", "disconnected");
 }
 
@@ -640,24 +692,6 @@ function updateSpeechAnalytics(): void {
     const element: any = document.getElementById(id);
     if (element) element.textContent = value;
   });
-}
-
-function updateRecordingIndicator(isActive: boolean): void {
-  const indicator = document.getElementById("recording-indicator");
-  const status = document.getElementById("recording-status");
-  const dataStatus = document.getElementById("data-status");
-
-  if (indicator && status && dataStatus) {
-    if (isActive) {
-      indicator.className = "w-2 h-2 rounded-full bg-red-500 animate-pulse";
-      status.textContent = "Recording";
-      dataStatus.textContent = "Data refreshing: Real-time";
-    } else {
-      indicator.className = "w-2 h-2 rounded-full bg-gray-400";
-      status.textContent = "Paused";
-      dataStatus.textContent = "Data refreshing: Paused";
-    }
-  }
 }
 
 function enhanceWebSocketEventManager(): void {
@@ -731,323 +765,555 @@ document.addEventListener("DOMContentLoaded", () => {
   document.head.appendChild(chartScript);
 });
 
-function createHtmlStructure(): void {
+async function createHtmlStructure(): void {
+  const styleElement = document.createElement("style");
   document.body.innerHTML = `
-        <div class="flex flex-col w-full h-screen bg-gray-50 gap-4">
-          <!-- Apply padding to entire dashboard container -->
-          <div class="px-8 py-4 flex flex-col w-full h-full gap-4">
-            <!-- Header -->
-            <div class="flex justify-between items-center bg-white p-4 rounded-lg shadow flex-shrink-0">
-              <div class="flex items-center gap-2">
-                <div class="text-blue-500">⚡</div>
-                <h1 class="text-xl font-bold">
-                  Amazon Nova Real-time Analytics Dashboard
-                </h1>
-              </div>
-              <div class="flex items-center gap-4">
-                <!-- Add session ID input field -->
-                <div class="flex items-center gap-2">
-                  <label for="session-id" class="text-sm">Session ID:</label>
-                  <input
-                    id="session-id"
-                    type="text"
-                    placeholder="Leave empty for new session"
-                    class="border rounded px-2 py-1 text-sm w-48"
-                  />
-                </div>
-                <div class="flex items-center gap-2">
-                  <div>🕐</div>
-                  <span id="session-time" class="font-mono">0:00</span>
-                </div>
-                <div id="connection-status" class="status disconnected">Disconnected</div>
-                <button
-                  id="start-button"
-                  class="flex items-center gap-2 px-3 py-1 rounded-md bg-green-100 text-green-700"
-                >
-                  Start Session
-                </button>
-                <button
-                  id="stop-button"
-                  class="flex items-center gap-2 px-3 py-1 rounded-md bg-red-100 text-red-700"
-                  disabled
-                >
-                  Stop Session
-                </button>
-              </div>
+<div class="flex flex-col w-full h-screen bg-gray-50 gap-4">
+  <!-- Apply padding to entire dashboard container -->
+  <div class="px-8 py-4 flex flex-col w-full h-full gap-4">
+    <!-- Header -->
+    <div
+      class="flex justify-between items-center bg-white p-4 rounded-lg shadow flex-shrink-0"
+    >
+      <div class="flex items-center gap-2">
+        <div class="text-blue-500">⚡</div>
+        <h1 class="text-xl font-bold">
+          Amazon Nova Real-time Analytics Dashboard
+        </h1>
+      </div>
+      <div class="flex items-center gap-4">
+        <!-- Add session ID input field -->
+        <div class="flex items-center gap-2">
+          <label for="session-id" class="text-sm">Session ID:</label>
+          <input
+            id="session-id"
+            type="text"
+            placeholder="Leave empty for new session"
+            class="border rounded px-2 py-1 text-sm w-48"
+          />
+        </div>
+        <div class="flex items-center gap-2">
+          <div>🕐</div>
+          <span id="session-time" class="font-mono">0:00</span>
+        </div>
+        <button
+          id="start-button"
+          class="flex items-center gap-2 px-3 py-1 rounded-md bg-green-100 text-green-700"
+        >
+         📞 
+        </button>
+        <button
+          id="stop-button"
+          class="flex items-center gap-2 px-3 py-1 rounded-md bg-red-100 text-red-700"
+          disabled
+        >
+          📞
+        </button>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <div class="flex gap-4 flex-grow overflow-hidden">
+      <!-- Left column - Metrics -->
+      <div class="flex flex-col flex-1 gap-4 overflow-y-auto">
+        <!-- Sentiment charts row -->
+        <div class="grid grid-cols-2 gap-4">
+          <div class="bg-white p-4 rounded-lg shadow">
+            <h2 class="text-md font-semibold mb-2">
+              Real-time Sentiment Analysis
+            </h2>
+            <div style="height: 200px">
+              <canvas id="sentiment-chart"></canvas>
             </div>
+          </div>
 
-            <!-- Main content -->
-            <div class="flex gap-4 flex-grow overflow-hidden">
-              <!-- Left column - Metrics -->
-              <div class="flex flex-col flex-1 gap-4 overflow-y-auto">
-                <!-- Sentiment charts row -->
-                <div class="grid grid-cols-2 gap-4">
-                  <div class="bg-white p-4 rounded-lg shadow">
-                    <h2 class="text-md font-semibold mb-2">
-                      Real-time Sentiment Analysis
-                    </h2>
-                    <div style="height: 200px;">
-                      <canvas id="sentiment-chart"></canvas>
-                    </div>
-                  </div>
-
-                  <!-- Overall sentiment donut chart -->
-                  <div class="bg-white p-4 rounded-lg shadow">
-                    <h2 class="text-md font-semibold mb-2">
-                      Overall Sentiment Distribution
-                    </h2>
-                    <div class="flex items-center">
-                      <div style="width: 50%; height: 180px;">
-                        <canvas id="sentiment-donut"></canvas>
-                      </div>
-                      <div class="w-1/2">
-                        <div class="mb-4 flex items-center gap-2">
-                          <div class="text-green-500">📈 </div>
-                          <span class="font-semibold">Dominant Tone:</span>
-                          <span id="dominant-tone" class="text-sm">neutral</span>
-                        </div>
-                        <div class="space-y-2">
-                          <div class="flex items-center gap-2">
-                            <div class="w-3 h-3 rounded-full bg-green-500"></div>
-                            <span>
-                              Positive: <span id="positive-percent">33</span>%
-                            </span>
-                          </div>
-                          <div class="flex items-center gap-2">
-                            <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
-                            <span>
-                              Neutral: <span id="neutral-percent">33</span>%
-                            </span>
-                          </div>
-                          <div class="flex items-center gap-2">
-                            <div class="w-3 h-3 rounded-full bg-orange-500"></div>
-                            <span>
-                              Negative: <span id="negative-percent">34</span>%
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Nova Insights -->
-                <div class="bg-white p-4 rounded-lg shadow">
-                  <div class="flex items-center gap-2 mb-3">
-                    <div class="text-amber-500">⚠️</div>
-                    <h2 class="text-md font-semibold">Nova AI Insights</h2>
-                  </div>
-                  <div id="insights-container" class="space-y-2">
-                    <div class="p-2 bg-amber-50 rounded border-l-4 border-amber-400 text-sm">
-                      Waiting for conversation to begin
-                    </div>
-                  </div>
-                </div>
+          <!-- Overall sentiment donut chart -->
+          <div class="bg-white p-4 rounded-lg shadow">
+            <h2 class="text-md font-semibold mb-2">
+              Overall Sentiment Distribution
+            </h2>
+            <div class="flex items-center">
+              <div style="width: 50%; height: 180px">
+                <canvas id="sentiment-donut"></canvas>
               </div>
-
-              <!-- Right column - Transcript with fixed height -->
-              <div class="w-1/3 bg-white rounded-lg shadow p-4 flex flex-col">
-                <div class="flex items-center justify-between mb-3 flex-shrink-0">
+              <div class="w-1/2">
+                <div class="mb-4 flex items-center gap-2">
+                  <div class="text-green-500">📈</div>
+                  <span class="font-semibold">Dominant Tone:</span>
+                  <span id="dominant-tone" class="text-sm">neutral</span>
+                </div>
+                <div class="space-y-2">
                   <div class="flex items-center gap-2">
-                    <div class="text-blue-500">🎤</div>
-                    <h2 class="text-md font-semibold">Live Transcript</h2>
+                    <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                    <span>
+                      Positive: <span id="positive-percent">33</span>%
+                    </span>
                   </div>
-                  <div class="text-xs text-gray-500">
-                    <div class="flex items-center gap-1">
-                      <div
-                        id="recording-indicator"
-                        class="w-2 h-2 rounded-full bg-gray-400"
-                      ></div>
-                      <span id="recording-status">Ready</span>
-                    </div>
+                  <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
+                    <span>
+                      Neutral: <span id="neutral-percent">33</span>%
+                    </span>
                   </div>
-                </div>
-
-                <div id="transcript-container" class="overflow-y-auto flex-grow bg-gray-100 rounded p-3 space-y-3">
-                  <!-- Transcript messages will be inserted here -->
-                </div>
-
-                <!-- Speech analytics summary with guaranteed display -->
-                <div class="mt-4 border-t pt-3 flex-shrink-0">
-                  <h3 class="text-sm font-semibold mb-2">Speech Analytics</h3>
-                  <div class="grid grid-cols-3 gap-2 text-sm">
-                    <div class="flex items-center gap-1">
-                      <div class="w-2 h-2 rounded-full bg-green-500"></div>
-                      <span>
-                        Agent Talk Time: <span id="agent-talk-time">0</span>%
-                      </span>
-                    </div>
-                    <div class="flex items-center gap-1">
-                      <div class="w-2 h-2 rounded-full bg-yellow-500"></div>
-                      <span>
-                        User Talk Time: <span id="user-talk-time">0</span>%
-                      </span>
-                    </div>
-                    <div class="flex items-center gap-1">
-                      <div class="w-2 h-2 rounded-full bg-blue-500"></div>
-                      <span>
-                        Avg Response Time: <span id="response-time">0</span>s
-                      </span>
-                    </div>
+                  <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-orange-500"></div>
+                    <span>
+                      Negative: <span id="negative-percent">34</span>%
+                    </span>
                   </div>
                 </div>
-              </div>
-            </div>
-
-            <!-- Footer - guaranteed to stay at bottom -->
-            <div class="flex justify-between items-center bg-white p-3 rounded-lg shadow text-xs text-gray-500 flex-shrink-0 mt-auto">
-              <div>Amazon Nova Analytics v1.3.5</div>
-              <div>Powered by Amazon Nova Speech and Text AI Models</div>
-              <div class="flex items-center gap-2">
-                <span id="data-status">Data refreshing: Ready</span>
               </div>
             </div>
           </div>
         </div>
-      `;
 
-  /* Add styles */
-  const styleElement = document.createElement("style");
+        <!-- Nova Insights -->
+        <div class="bg-white p-4 rounded-lg shadow">
+          <div class="flex items-center gap-2 mb-3">
+            <div class="text-amber-500">⚠️</div>
+            <h2 class="text-md font-semibold">Nova AI Insights</h2>
+          </div>
+          <div id="insights-container" class="space-y-2">
+            <div
+              class="p-2 bg-amber-50 rounded border-l-4 border-amber-400 text-sm"
+            >
+              Waiting for conversation to begin
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right column - Transcript with fixed height -->
+      <div class="w-1/3 bg-white rounded-lg shadow p-4 flex flex-col">
+        <div class="flex items-center justify-between mb-3 flex-shrink-0">
+          <div class="flex items-center gap-2">
+            <div class="text-blue-500">🎤</div>
+            <h2 class="text-md font-semibold">Live Transcript</h2>
+          </div>
+          <div class="text-xs text-gray-500">
+            <div class="flex items-center gap-1">
+              <div
+                id="recording-indicator"
+                class="w-2 h-2 rounded-full bg-gray-400"
+              ></div>
+              <span id="recording-status">Ready</span>
+            </div>
+          </div>
+        </div>
+
+        <div
+          id="transcript-container"
+          class="overflow-y-auto flex-grow bg-gray-100 rounded p-3 space-y-3"
+        >
+          <!-- Transcript messages will be inserted here -->
+        </div>
+
+        <!-- Speech analytics summary with guaranteed display -->
+        <div class="mt-4 border-t pt-3 flex-shrink-0">
+          <h3 class="text-sm font-semibold mb-2">Speech Analytics</h3>
+          <div class="grid grid-cols-3 gap-2 text-sm">
+            <div class="flex items-center gap-1">
+              <div class="w-2 h-2 rounded-full bg-green-500"></div>
+              <span>
+                Agent Talk Time: <span id="agent-talk-time">0</span>%
+              </span>
+            </div>
+            <div class="flex items-center gap-1">
+              <div class="w-2 h-2 rounded-full bg-yellow-500"></div>
+              <span> User Talk Time: <span id="user-talk-time">0</span>% </span>
+            </div>
+            <div class="flex items-center gap-1">
+              <div class="w-2 h-2 rounded-full bg-blue-500"></div>
+              <span>
+                Avg Response Time: <span id="response-time">0</span>s
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Text-to-Speech Section -->
+        <div class="mt-4 border-t pt-3 flex-shrink-0">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="flex gap-2">
+              <textarea
+                id="tts-text"
+                class="border rounded p-2 text-sm w-4/5 mx-auto block"
+                rows="2"
+                placeholder="Enter text..."
+              ></textarea>
+              <button
+                id="tts-button"
+                class="bg-purple-500 hover:bg-purple-600 text-white rounded px-3 py-1 text-sm"
+              >
+                Send
+              </button>
+            </div>
+            <div id="polly-audio-container" class="mt-2"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer - guaranteed to stay at bottom -->
+    <div
+      class="flex justify-between items-center bg-white p-3 rounded-lg shadow text-xs text-gray-500 flex-shrink-0 mt-auto"
+    >
+      <div>Amazon Nova Analytics v1.3.5</div>
+      <div>Powered by Amazon Nova Speech and Text AI Models</div>
+    </div>
+  </div>
+</div>
+  `;
   styleElement.textContent = `
-      body {
-        font-family: sans-serif;
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100vh;
-        overflow: hidden;
-      }
-      .status.connecting {
-        background-color: #fef3c7;
-        color: #92400e;
-      }
-      .h-screen {
-        height: 100vh;
-      }
-      .status {
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 12px;
-      }
-      .status.connected {
-        background-color: #dcfce7;
-        color: #166534;
-      }
-      .status.disconnected {
-        background-color: #f3f4f6;
-        color: #6b7280;
-      }
-      .status.error {
-        background-color: #fee2e2;
-        color: #b91c1c;
-      }
-      /* Tailwind-like utility classes */
-      .flex { display: flex; }
-      .flex-col { flex-direction: column; }
-      .flex-1 { flex: 1 1 0%; }
-      .flex-shrink-0 { flex-shrink: 0; }
-      .flex-grow { flex-grow: 1; }
-      .mt-auto { margin-top: auto; }
-      .items-center { align-items: center; }
-      .justify-between { justify-content: space-between; }
-      .justify-end { justify-content: flex-end; }
-      .justify-start { justify-content: flex-start; }
-      .gap-1 { gap: 4px; }
-      .gap-2 { gap: 8px; }
-      .gap-3 { gap: 12px; }
-      .gap-4 { gap: 16px; }
-      .w-full { width: 100%; }
-      .w-1/2 { width: 50%; }
-      .w-1/3 { width: 33.333333%; }
-      .w-2/3 { width: 66.666667%; }
-      .w-2 { width: 8px; }
-      .w-3 { width: 12px; }
-      .h-full { height: 100%; }
-      .h-2.5 { height: 10px; }
-      .h-2 { height: 8px; }
-      .h-3 { height: 12px; }
-      .rounded-lg { border-radius: 8px; }
-      .rounded-full { border-radius: 9999px; }
-      .rounded { border-radius: 4px; }
-      .rounded-br-none { border-bottom-right-radius: 0; }
-      .rounded-bl-none { border-bottom-left-radius: 0; }
-      .bg-white { background-color: white; }
-      .bg-gray-50 { background-color: #f9fafb; }
-      .bg-gray-100 { background-color: #f3f4f6; }
-      .bg-gray-200 { background-color: #e5e7eb; }
-      .bg-gray-300 { background-color: #d1d5db; }
-      .bg-gray-400 { background-color: #9ca3af; }
-      .bg-gray-500 { background-color: #6b7280; }
-      .bg-blue-500 { background-color: #3b82f6; }
-      .bg-blue-600 { background-color: #2563eb; }
-      .bg-blue-100 { background-color: #dbeafe; }
-      .bg-green-500 { background-color: #22c55e; }
-      .bg-green-100 { background-color: #dcfce7; }
-      .bg-red-100 { background-color: #fee2e2; }
-      .bg-red-500 { background-color: #ef4444; }
-      .bg-red-700 { background-color: #b91c1c; }
-      .bg-yellow-500 { background-color: #eab308; }
-      .bg-amber-50 { background-color: #fffbeb; }
-      .bg-amber-400 { border-color: #fbbf24; }
-      .bg-amber-500 { background-color: #f59e0b; }
-      .bg-purple-500 { background-color: #a855f7; }
-      .bg-purple-600 { background-color: #9333ea; }
-      .bg-indigo-500 { background-color: #6366f1; }
-      .bg-orange-500 { background-color: #f97316; }
-      .text-white { color: white; }
-      .text-black { color: black; }
-      .text-gray-500 { color: #6b7280; }
-      .text-green-500 { color: #22c55e; }
-      .text-green-700 { color: #15803d; }
-      .text-blue-500 { color: #3b82f6; }
-      .text-blue-700 { color: #1d4ed8; }
-      .text-red-700 { color: #b91c1c; }
-      .text-purple-500 { color: #a855f7; }
-      .text-amber-500 { color: #f59e0b; }
-      .p-2 { padding: 8px; }
-      .p-3 { padding: 12px; }
-      .p-4 { padding: 16px; }
-      .pt-3 { padding-top: 12px; }
-      .px-3 { padding-left: 12px; padding-right: 12px; }
-      .py-1 { padding-top: 4px; padding-bottom: 4px; }
-      .text-xs { font-size: 12px; }
-      .text-sm { font-size: 14px; }
-      .text-md { font-size: 16px; }
-      .text-xl { font-size: 20px; }
-      .font-mono { font-family: monospace; }
-      .font-semibold { font-weight: 600; }
-      .font-bold { font-weight: 700; }
-      .shadow { box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); }
-      .border-t { border-top: 1px solid #e5e7eb; }
-      .border-l-4 { border-left-width: 4px; }
-      .border-amber-400 { border-color: #fbbf24; }
-      .space-y-2 > * + * { margin-top: 8px; }
-      .space-y-3 > * + * { margin-top: 12px; }
-      .mt-1 { margin-top: 4px; }
-      .mt-4 { margin-top: 16px; }
-      .mb-1 { margin-bottom: 4px; }
-      .mb-2 { margin-bottom: 8px; }
-      .mb-3 { margin-bottom: 12px; }
-      .mb-4 { margin-bottom: 16px; }
-      .grid { display: grid; }
-      .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .overflow-y-auto { overflow-y: auto; }
-      .overflow-hidden { overflow: hidden; }
-      .max-w-xs { max-width: 20rem; }
-      .text-right { text-align: right; }
-      .opacity-70 { opacity: 0.7; }
-      .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-      .animate-bounce { animation: bounce 1s infinite; }
-      @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: .5; }
-      }
-      @keyframes bounce {
-        0%, 100% { transform: translateY(-25%); animation-timing-function: cubic-bezier(0.8, 0, 1, 1); }
-        50% { transform: translateY(0); animation-timing-function: cubic-bezier(0, 0, 0.2, 1); }
-      }
-    `;
+body {
+  font-family: sans-serif;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+.status.connecting {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+.h-screen {
+  height: 100vh;
+}
+.status {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.status.connected {
+  background-color: #dcfce7;
+  color: #166534;
+}
+.status.disconnected {
+  background-color: #f3f4f6;
+  color: #6b7280;
+}
+.status.error {
+  background-color: #fee2e2;
+  color: #b91c1c;
+}
+/* Tailwind-like utility classes */
+.flex {
+  display: flex;
+}
+.flex-col {
+  flex-direction: column;
+}
+.flex-1 {
+  flex: 1 1 0%;
+}
+.flex-shrink-0 {
+  flex-shrink: 0;
+}
+.flex-grow {
+  flex-grow: 1;
+}
+.mt-auto {
+  margin-top: auto;
+}
+.items-center {
+  align-items: center;
+}
+.justify-between {
+  justify-content: space-between;
+}
+.justify-end {
+  justify-content: flex-end;
+}
+.justify-start {
+  justify-content: flex-start;
+}
+.gap-1 {
+  gap: 4px;
+}
+.gap-2 {
+  gap: 8px;
+}
+.gap-3 {
+  gap: 12px;
+}
+.gap-4 {
+  gap: 16px;
+}
+.w-full {
+  width: 100%;
+}
+.w-1/2 {
+  width: 50%;
+}
+.w-1/3 {
+  width: 33.333333%;
+}
+.w-2/3 {
+  width: 66.666667%;
+}
+.w-2 {
+  width: 8px;
+}
+.w-3 {
+  width: 12px;
+}
+.h-full {
+  height: 100%;
+}
+.h-2.5 {
+  height: 10px;
+}
+.h-2 {
+  height: 8px;
+}
+.h-3 {
+  height: 12px;
+}
+.rounded-lg {
+  border-radius: 8px;
+}
+.rounded-full {
+  border-radius: 9999px;
+}
+.rounded {
+  border-radius: 4px;
+}
+.rounded-br-none {
+  border-bottom-right-radius: 0;
+}
+.rounded-bl-none {
+  border-bottom-left-radius: 0;
+}
+.bg-white {
+  background-color: white;
+}
+.bg-gray-50 {
+  background-color: #f9fafb;
+}
+.bg-gray-100 {
+  background-color: #f3f4f6;
+}
+.bg-gray-200 {
+  background-color: #e5e7eb;
+}
+.bg-gray-300 {
+  background-color: #d1d5db;
+}
+.bg-gray-400 {
+  background-color: #9ca3af;
+}
+.bg-gray-500 {
+  background-color: #6b7280;
+}
+.bg-blue-500 {
+  background-color: #3b82f6;
+}
+.bg-blue-600 {
+  background-color: #2563eb;
+}
+.bg-blue-100 {
+  background-color: #dbeafe;
+}
+.bg-green-500 {
+  background-color: #22c55e;
+}
+.bg-green-100 {
+  background-color: #dcfce7;
+}
+.bg-red-100 {
+  background-color: #fee2e2;
+}
+.bg-red-500 {
+  background-color: #ef4444;
+}
+.bg-red-700 {
+  background-color: #b91c1c;
+}
+.bg-yellow-500 {
+  background-color: #eab308;
+}
+.bg-amber-50 {
+  background-color: #fffbeb;
+}
+.bg-amber-400 {
+  border-color: #fbbf24;
+}
+.bg-amber-500 {
+  background-color: #f59e0b;
+}
+.bg-purple-500 {
+  background-color: #a855f7;
+}
+.bg-purple-600 {
+  background-color: #9333ea;
+}
+.bg-indigo-500 {
+  background-color: #6366f1;
+}
+.bg-orange-500 {
+  background-color: #f97316;
+}
+.text-white {
+  color: white;
+}
+.text-black {
+  color: black;
+}
+.text-gray-500 {
+  color: #6b7280;
+}
+.text-green-500 {
+  color: #22c55e;
+}
+.text-green-700 {
+  color: #15803d;
+}
+.text-blue-500 {
+  color: #3b82f6;
+}
+.text-blue-700 {
+  color: #1d4ed8;
+}
+.text-red-700 {
+  color: #b91c1c;
+}
+.text-purple-500 {
+  color: #a855f7;
+}
+.text-amber-500 {
+  color: #f59e0b;
+}
+.p-2 {
+  padding: 8px;
+}
+.p-3 {
+  padding: 12px;
+}
+.p-4 {
+  padding: 16px;
+}
+.pt-3 {
+  padding-top: 12px;
+}
+.px-3 {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.py-1 {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.text-xs {
+  font-size: 12px;
+}
+.text-sm {
+  font-size: 14px;
+}
+.text-md {
+  font-size: 16px;
+}
+.text-xl {
+  font-size: 20px;
+}
+.font-mono {
+  font-family: monospace;
+}
+.font-semibold {
+  font-weight: 600;
+}
+.font-bold {
+  font-weight: 700;
+}
+.shadow {
+  box-shadow:
+    0 1px 3px 0 rgba(0, 0, 0, 0.1),
+    0 1px 2px 0 rgba(0, 0, 0, 0.06);
+}
+.border-t {
+  border-top: 1px solid #e5e7eb;
+}
+.border-l-4 {
+  border-left-width: 4px;
+}
+.border-amber-400 {
+  border-color: #fbbf24;
+}
+.space-y-2 > * + * {
+  margin-top: 8px;
+}
+.space-y-3 > * + * {
+  margin-top: 12px;
+}
+.mt-1 {
+  margin-top: 4px;
+}
+.mt-4 {
+  margin-top: 16px;
+}
+.mb-1 {
+  margin-bottom: 4px;
+}
+.mb-2 {
+  margin-bottom: 8px;
+}
+.mb-3 {
+  margin-bottom: 12px;
+}
+.mb-4 {
+  margin-bottom: 16px;
+}
+.grid {
+  display: grid;
+}
+.grid-cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.grid-cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.overflow-y-auto {
+  overflow-y: auto;
+}
+.overflow-hidden {
+  overflow: hidden;
+}
+.max-w-xs {
+  max-width: 20rem;
+}
+.text-right {
+  text-align: right;
+}
+.opacity-70 {
+  opacity: 0.7;
+}
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.animate-bounce {
+  animation: bounce 1s infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+@keyframes bounce {
+  0%,
+  100% {
+    transform: translateY(-25%);
+    animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
+  }
+  50% {
+    transform: translateY(0);
+    animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  }
+}
+  `;
   document.head.appendChild(styleElement);
 
   // Ensure audio context is resumed after user interaction
