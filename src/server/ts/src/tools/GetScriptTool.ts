@@ -28,6 +28,7 @@ export class GetScriptTool extends Tool {
       n = 0;
     }
     console.log("n", n);
+
     const scripts = [
       "",
       "You are in a dungeon. You don't know how you got here. It's pitch black but you can feel some objects lying by your side... OPTION 2: Pick up the sharp object; OPTION 3: Pick up the heavy object",

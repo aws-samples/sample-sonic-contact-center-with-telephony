@@ -33,10 +33,7 @@ function isTrue(s: string | undefined) {
   return s?.toLowerCase() === "true";
 }
 
-const browser = new BrowserIntegration(
-  isTrue(process.env.BROWSER_ENABLED),
-  app
-);
+const browser = new BrowserIntegration(isTrue(process.env.BROWSER_ENABLED), app);
 const vonage = new VonageIntegration(isTrue(process.env.VONAGE_ENABLED), app);
 const twilio = new TwilioIntegration(isTrue(process.env.TWILIO_ENABLED), app);
 
@@ -258,11 +255,10 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
     }
 
     try {
-      // if (browser.isOn) await browser.tryProcessAudioInput(msg as Buffer, session);
-      // if (vonage.isOn) await vonage.tryProcessAudioInput(msg as Buffer, session);
-      if (twilio.isOn)
-        await twilio.tryProcessAudioInput(msg as string, session);
-      // await tryProcessNovaSonicMessage(msg, session)
+      if (browser.isOn) await browser.tryProcessAudioInput(msg as Buffer, session);
+      if (vonage.isOn) await vonage.tryProcessAudioInput(msg as Buffer, session);
+      if (twilio.isOn) await twilio.tryProcessAudioInput(msg as string, session);
+      await tryProcessNovaSonicMessage(msg, session)
     } catch (error) {
       sendError("Error processing message", String(error));
     }
