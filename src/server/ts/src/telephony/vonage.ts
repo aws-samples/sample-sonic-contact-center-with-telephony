@@ -59,7 +59,7 @@ export class VonageIntegration {
     res.sendStatus(200);
   }
 
-  public async tryProcessAudioData(message: Buffer, session: Session): Promise<void> {
+  public async tryProcessAudioInput(message: Buffer, session: Session): Promise<void> {
     if (!this.isOn) return;
     
     try {
