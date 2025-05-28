@@ -16,16 +16,20 @@ export interface WebhookResponse {
 export class VonageIntegration {
   isOn: boolean;
 
-  constructor(isOn: boolean = false) {
+  constructor(isOn: boolean = false, app: any) {
+    if (!isOn) return;
+
     this.isOn = isOn;
-    if (this.isOn) console.log("Vonage integration initialized.");
+    this.configureRoutes(app)
+
+    console.log("Vonage integration initialized.");
   }
 
   public configureRoutes(app: any): void {
     if (!this.isOn) return;
 
-    app.get("/webhooks/answer", this.handleWebhookAnswer.bind(this));
-    app.post("/webhooks/events", this.handleWebhookEvents.bind(this));
+    app.get("/vonage/answer", this.handleWebhookAnswer.bind(this));
+    app.post("/vonage/events", this.handleWebhookEvents.bind(this));
   }
 
   private handleWebhookAnswer(req: Request, res: Response): void {
@@ -55,11 +59,11 @@ export class VonageIntegration {
     res.sendStatus(200);
   }
 
-  public async processAudioData(message: Buffer, session: Session): Promise<void> {
+  public async tryProcessAudioData(message: Buffer, session: Session): Promise<void> {
     if (!this.isOn) return;
     
     try {
-      const audioBuffer = Buffer.from(message);
+      const audioBuffer = Buffer.from(message); // TODO: Needed?
       await session.streamAudio(audioBuffer);
     } catch (error) {
       console.error("Error processing Vonage audio data:", error);

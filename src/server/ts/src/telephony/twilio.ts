@@ -1,53 +1,38 @@
-import { Request, Response } from "express";
-import { Twilio, twiml } from "twilio";
-import { mulaw } from "alawmulaw";
-import { Session } from "./types";
 import WebSocket from "ws";
 import { Buffer } from "node:buffer";
+import { Request, Response } from "express";
+import { Session } from "../types";
+import { mulaw } from "alawmulaw";
 
 export class TwilioIntegration {
-  private twClient: Twilio;
-  private channelStreams: Map<string, Session>;
-  private useTwilio: boolean;
+  isOn: boolean;
 
-  constructor(
-    useTwilioFlag: boolean = false,
-    channelStreamsMap: Map<string, Session>,
-    apiSid?: string,
-    apiSecret?: string,
-    accountSid?: string
-  ) {
-    this.useTwilio = useTwilioFlag;
-    this.channelStreams = channelStreamsMap;
+  constructor(isOn: boolean = false, app: any) {
+    if (!isOn) return;
 
-    if (this.useTwilio) {
-      if (!apiSid || !apiSecret || !accountSid) {
-        console.warn("Twilio credentials not fully provided but useTwilio is true");
-      }
-      this.twClient = new Twilio(apiSid, apiSecret, { accountSid });
-      console.log("Twilio integration initialized");
-    }
+    this.isOn = isOn;
+    this.configureRoutes(app);
+
+    console.log("Twilio integration initialized");
   }
 
   public configureRoutes(app: any): void {
-    if (!this.useTwilio) return;
+    if (!this.isOn) return;
 
-    app.all("/incoming-call", this.handleIncomingCall.bind(this));
-    app.all("/failover", this.handleFailover.bind(this));
-    app.get("/media-stream", { websocket: true }, this.handleMediaStream.bind(this));
+    app.all("/twilio/incoming-call", this.handleIncomingCall.bind(this));
+    app.all("/twilio/failover", this.handleFailover.bind(this));
   }
 
   private handleIncomingCall(req: Request, res: Response): void {
+    console.log("Twilio incoming call");
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
       <Response>
-        <Say>Please wait while we connect your call to the AI assistant</Say>
-        <Pause length="1"/>
-        <Say>OK, you can start talking!</Say>
+        <Say>You've been connected.</Say>
         <Connect>
-          <Stream url="wss://${req.headers.host}/media-stream" />
+          <Stream url="wss://${req.headers.host}/socket" />
         </Connect>
       </Response>`;
-    
+
     res.type("text/xml").send(twimlResponse);
   }
 
@@ -62,147 +47,85 @@ export class TwilioIntegration {
           <Sip>${sipEndpoint}</Sip>
         </Dial>
       </Response>`;
-    
+
     res.type("text/xml").send(sipTwiml);
   }
 
-  private handleMediaStream(connection: WebSocket, req: any): void {
-    console.log("Twilio media stream client connected");
-
-    let sessionId = "";
-    let session: Session | null = null;
-    let callSid = "";
-
-    connection.on("message", async (message) => {
-      try {
-        const data = JSON.parse(message.toString());
-
-        switch (data.event) {
-          case "connected":
-            console.log(`Twilio WebSocket connected: ${message}`);
-            break;
-
-          case "start":
-            sessionId = data.streamSid;
-            callSid = data.start.callSid;
-            console.log(`Twilio stream started: streamSid: ${sessionId}, callSid: ${callSid}`);
-
-            // Find or create session
-            if (this.channelStreams.has(sessionId)) {
-              session = this.channelStreams.get(sessionId)!;
-            } else {
-              console.error("No session available for Twilio stream");
-              connection.close();
-              return;
-            }
-
-            await session.setupPromptStart();
-            await session.setupSystemPrompt(
-              undefined,
-              `You are an AI assistant having a voice conversation over a phone call. 
-              Keep responses concise and conversational. Remember that the user can only 
-              hear you, not see you, so describe any visual information.
-              You must always be helpful and friendly.`
-            );
-            await session.setupStartAudio();
-            break;
-
-          case "media":
-            if (!session || !sessionId) break;
-            
-            // Convert from 8-bit mulaw to 16-bit LPCM
-            const audioInput = Buffer.from(data.media.payload, "base64");
-            const pcmSamples = mulaw.decode(audioInput);
-            const audioBuffer = Buffer.from(pcmSamples.buffer);
-            
-            // Stream audio to session
-            await session.streamAudio(audioBuffer);
-            break;
-
-          case "stop":
-            console.log(`Twilio stream stopped: ${sessionId}`);
-            if (session) {
-              await session.endAudioContent();
-              await session.endPrompt();
-            }
-            break;
-
-          default:
-            console.log(`Received non-media Twilio event: ${data.event}`);
-            break;
-        }
-      } catch (error) {
-        console.error("Error processing Twilio message:", error);
+  private messageHandlers = new Map<
+    string,
+    (jsonMsg: any, session: Session) => Promise<void>
+  >([
+    [ 
+      "start",
+      async (jsonMsg, session) => {
+        session.streamSid = jsonMsg.streamSid;
+        console.log(`Started twilio with streamSid ${session.streamSid}`);
       }
-    });
+    ],
+    [
+      "media",
+      async (jsonMsg, session) => {
+        const audioInput = Buffer.from(jsonMsg.media.payload, "base64");
+        const pcmSamples = mulaw.decode(audioInput);
+        const audioBuffer = Buffer.from(pcmSamples.buffer);
+        await session.streamAudio(audioBuffer);
+      },
+    ],
+  ]);
 
-    connection.on("close", async () => {
-      console.log("Twilio media stream client disconnected");
-      if (session) {
-        try {
-          await session.endAudioContent();
-          await session.endPrompt();
-        } catch (error) {
-          console.error("Error cleaning up Twilio session:", error);
-        }
-      }
-    });
+  public async tryProcessAudioInput(
+    msg: string,
+    session: Session
+  ): Promise<void> {
+    if (!this.isOn) return;
 
-    // Set up audio output handler for this connection
-    if (sessionId && this.channelStreams.has(sessionId)) {
-      const session = this.channelStreams.get(sessionId)!;
-      
-      session.onEvent("audioOutput", (data) => {
-        // Decode base64 to get the PCM buffer
-        const buffer = Buffer.from(data["content"], "base64");
-        
-        // Convert to Int16Array
-        const pcmSamples = new Int16Array(
-          buffer.buffer,
-          buffer.byteOffset,
-          buffer.length / Int16Array.BYTES_PER_ELEMENT
-        );
-        
-        // Encode to mulaw (8-bit)
-        const mulawSamples = mulaw.encode(pcmSamples);
-        
-        // Convert to base64
-        const payload = Buffer.from(mulawSamples).toString("base64");
+    const data = JSON.parse(msg.toString());
 
-        // Send formatted audio back to Twilio
-        const audioResponse = {
-          event: "media",
-          media: {
-            track: "outbound",
-            payload
-          },
-          streamSid: sessionId
-        };
-
-        if (connection.readyState === WebSocket.OPEN) {
-          connection.send(JSON.stringify(audioResponse));
-        }
-      });
+    try {
+      const handler = this.messageHandlers.get(data.event);
+      handler
+        ? await handler(data, session)
+        : console.error("Caught unclassified Twilio message:", data);
+    } catch (error) {
+      console.error("Error processing Twilio audio data:", error);
     }
   }
 
-  public async transferToHuman(callSid: string): Promise<void> {
-    if (!this.useTwilio || !callSid) return;
+  public async tryProcessAudioOutput(
+    pcmSamples: Int16Array,
+    clients: any,
+    streamSid: string
+  ): Promise<void> {
+    if (!this.isOn) return;
 
     try {
-      const sipEndpoint = process.env.SIP_ENDPOINT || "";
-      const sipTwiml = `
-        <Response>
-          <Say>Transferring you to a human agent now</Say>
-          <Dial>
-            <Sip>${sipEndpoint}</Sip>
-          </Dial>
-        </Response>`;
+      const resampledPcmSamples = this.resample16kHzTo8kHz(pcmSamples)
+      const mulawSamples = mulaw.encode(resampledPcmSamples);
+      const payload = Buffer.from(mulawSamples).toString("base64");
+      const response = JSON.stringify({
+        event: "media",
+        media: {
+          track: "outbound",
+          payload,
+        },
+        streamSid
+      });
+      console.log("response", response)
 
-      await this.twClient.calls(callSid).update({ twiml: sipTwiml });
-      console.log(`Successfully transferred call ${callSid} to human agent`);
-    } catch (error) {
-      console.error(`Failed to transfer call ${callSid}:`, error);
+      clients?.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) client.send(response);
+      });
+    } catch (e) {
+      console.log("An error occurred processing Twilio audio output:", e)
     }
+  }
+
+  private resample16kHzTo8kHz(pcmSamples: Int16Array): Int16Array {
+    const outputLength = Math.ceil(pcmSamples.length / 2);
+    const result = new Int16Array(outputLength);
+    for (let i = 0; i < outputLength; i++) {
+      result[i] = pcmSamples[i * 2]; // Take every other sample
+    }
+    return result;
   }
 }

@@ -58,6 +58,7 @@ interface Session {
   endAudioContent: () => Promise<void>;
   endPrompt: () => Promise<void>;
   close: () => Promise<void>;
+  streamSid?: string | undefined;
 }
 
 interface ActiveSession {

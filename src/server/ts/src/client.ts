@@ -1,6 +1,5 @@
 import {
   BedrockRuntimeClient,
-  GetAsyncInvokeCommand,
   InvokeModelWithBidirectionalStreamCommand,
   InvokeModelWithBidirectionalStreamInput,
 } from "@aws-sdk/client-bedrock-runtime";
@@ -21,7 +20,6 @@ import {
 } from "./consts";
 import { SessionData, NovaSonicBidirectionalStreamClientConfig } from "./types";
 import { ToolRegistry } from "./tools/ToolRegistry";
-import GetScriptTool from "./tools/GetScriptTool";
 
 export class StreamSession {
   private audioBufferQueue: Buffer[] = [];

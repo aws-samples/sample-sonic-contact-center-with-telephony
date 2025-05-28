@@ -1,24 +1,22 @@
-import express, { Request, Response } from "express";
-import bodyParser from "body-parser";
-import expressWs from "express-ws";
+import "dotenv/config";
 import * as https from "https";
-import { fromEnv } from "@aws-sdk/credential-providers";
-import { NovaSonicBidirectionalStreamClient } from "./client";
-import { Buffer } from "node:buffer";
 import WebSocket from "ws";
-import {
-  Session,
-  SessionEventData,
-} from "./types";
-import { v4 as uuidv4 } from "uuid";
+import bodyParser from "body-parser";
+import express, { Request, Response } from "express";
+import expressWs from "express-ws";
+import { BrowserIntegration } from "./telephony/browser";
+import { Buffer } from "node:buffer";
+import { NovaSonicBidirectionalStreamClient } from "./client";
+import { Session, SessionEventData } from "./types";
+import { TwilioIntegration } from "./telephony/twilio";
 import { VonageIntegration } from "./telephony/vonage";
-// import { TwilioIntegration } from "./telephony/twilio";
+import { fromEnv } from "@aws-sdk/credential-providers";
+import { v4 as uuidv4 } from "uuid";
 
 const app = express();
 const wsInstance = expressWs(app);
 app.use(bodyParser.json());
 
-const AWS_PROFILE_NAME: string = process.env.AWS_PROFILE || "";
 const bedrockClient = new NovaSonicBidirectionalStreamClient({
   requestHandlerConfig: {
     maxConcurrentStreams: 10,
@@ -30,10 +28,17 @@ const bedrockClient = new NovaSonicBidirectionalStreamClient({
 });
 
 // Integrations
-const useJson: boolean = true;
-const vonage = new VonageIntegration(true)
-vonage.configureRoutes(app)
-// new TwilioIntegration(useTwilio).configureRoutes(app)
+
+function isTrue(s: string | undefined) {
+  return s?.toLowerCase() === "true";
+}
+
+const browser = new BrowserIntegration(
+  isTrue(process.env.BROWSER_ENABLED),
+  app
+);
+const vonage = new VonageIntegration(isTrue(process.env.VONAGE_ENABLED), app);
+const twilio = new TwilioIntegration(isTrue(process.env.TWILIO_ENABLED), app);
 
 /* Periodically check for and close inactive sessions (every minute).
  * Sessions with no activity for over 5 minutes will be force closed
@@ -110,39 +115,31 @@ function setUpEventHandlersForChannel(session: Session, channelId: string) {
 
   session.onEvent("audioOutput", (data: SessionEventData) => {
     // Process audio data as before
-    let audioBuffer: Int16Array | null = null;
     const CHUNK_SIZE_BYTES = 640;
     const SAMPLES_PER_CHUNK = CHUNK_SIZE_BYTES / 2;
 
+    const clients = channelClients.get(channelId) || new Set();
+
     const buffer = Buffer.from(data["content"], "base64");
-    const newPcmSamples = new Int16Array(
+    const pcmSamples = new Int16Array(
       buffer.buffer,
       buffer.byteOffset,
       buffer.length / Int16Array.BYTES_PER_ELEMENT
     );
 
-    const clients = channelClients.get(channelId) || new Set();
-
-    if (useJson) {
-      const message = JSON.stringify({ event: { audioOutput: { ...data } } });
-      clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) client.send(message);
-      });
-    }
-
     let offset = 0;
-    while (offset + SAMPLES_PER_CHUNK <= newPcmSamples.length) {
-      const chunk = newPcmSamples.slice(offset, offset + SAMPLES_PER_CHUNK);
-
-      clients?.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) client.send(chunk);
-      });
-
-      offset += SAMPLES_PER_CHUNK;
+    if (twilio.isOn) {
+      twilio.tryProcessAudioOutput(pcmSamples, clients, session.streamSid!);
+    } else {
+      while (offset + SAMPLES_PER_CHUNK <= pcmSamples.length) {
+        const chunk = pcmSamples.slice(offset, offset + SAMPLES_PER_CHUNK);
+        clients?.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) client.send(chunk);
+        });
+        offset += SAMPLES_PER_CHUNK;
+      }
     }
-
-    audioBuffer =
-      offset < newPcmSamples.length ? newPcmSamples.slice(offset) : null;
+    if (browser.isOn) browser.tryProcessAudioOutput(data, clients);
   });
 }
 
@@ -155,17 +152,51 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
     ws.send(JSON.stringify({ event: "error", data: { message, details } }));
   };
 
+  async function tryProcessNovaSonicMessage(msg: any, session: Session) {
+    try {
+      const jsonMsg = JSON.parse(msg.toString());
+
+      let novaSonicHandlers = new Map<
+        string,
+        (jsonMsg: any, session: Session) => Promise<void>
+      >([
+        [
+          "promptStart",
+          async (jsonMsg, session) => await session.setupPromptStart(),
+        ],
+        [
+          "systemPrompt",
+          async (jsonMsg, session) =>
+            await session.setupSystemPrompt(undefined, jsonMsg.data),
+        ],
+        [
+          "audioStart",
+          async (jsonMsg, session) => await session.setupStartAudio(),
+        ],
+        [
+          "stopAudio",
+          async (jsonMsg, session) => {
+            await session.endAudioContent();
+            await session.endPrompt();
+            console.log("Session cleanup complete");
+          },
+        ],
+      ]);
+
+      const handler = novaSonicHandlers.get(jsonMsg.type);
+      if (handler) await handler(jsonMsg, session);
+    } catch (e) {}
+  }
+
   const initializeOrJoinChannel = async () => {
     try {
       let session: Session;
       let isNewChannel = false;
 
-      // Check if channel exists
       if (channelStreams.has(channelId)) {
         console.log(`Client joining existing channel: ${channelId}`);
         session = channelStreams.get(channelId)!;
       } else {
-        // Create new session for this channel
         console.log(`Creating new channel: ${channelId}`);
         session = bedrockClient.createStreamSession(channelId);
         bedrockClient.initiateSession(channelId);
@@ -184,7 +215,6 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
           by checking the script. You must not tell the user about the script. You must always present the options
           to the user with numbers. If the script tells you to check your tools, you are then allowed to deviate
           from the script.
-          You can also cook scallops.
           Before every response to the user, you MUST check if you have any messages to pass on to the user.
           `
         );
@@ -228,38 +258,11 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
     }
 
     try {
-      let audioBuffer: Buffer | undefined;
-      try {
-        const jsonMsg = JSON.parse(msg.toString());
-        if (jsonMsg.type) console.log("Event received of type:", jsonMsg.type);
-        switch (jsonMsg.type) {
-          case "promptStart":
-            await session.setupPromptStart();
-            break;
-          case "systemPrompt":
-            await session.setupSystemPrompt(undefined, jsonMsg.data);
-            break;
-          case "audioStart":
-            await session.setupStartAudio();
-            break;
-          case "stopAudio":
-            await session.endAudioContent();
-            await session.endPrompt();
-            console.log("Session cleanup complete");
-            break;
-          default:
-            break;
-        }
-      } catch (e) {
-        if (vonage.isOn) await vonage.processAudioData(msg as Buffer, session)
-      } finally {
-        if (useJson) {
-          const msgJson = JSON.parse(msg.toString());
-          // TODO: We shouldn't do this.
-          audioBuffer = Buffer.from(msgJson.event.audioInput.content, "base64");
-          await session.streamAudio(audioBuffer);
-        }
-      }
+      // if (browser.isOn) await browser.tryProcessAudioInput(msg as Buffer, session);
+      // if (vonage.isOn) await vonage.tryProcessAudioInput(msg as Buffer, session);
+      if (twilio.isOn)
+        await twilio.tryProcessAudioInput(msg as string, session);
+      // await tryProcessNovaSonicMessage(msg, session)
     } catch (error) {
       sendError("Error processing message", String(error));
     }
