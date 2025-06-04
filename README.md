@@ -1,10 +1,10 @@
-# Nova Sonic Contact Center with Telephony
-Authors: Andrew Young <ajuny@amazon.com>, Reilly Manton <rcmanton@amazon.com>
+# Nova S2S Analytics Dashboard
+Authors: Andrew Young, Reilly Manton
 
 This solution introduces a comprehensive analytics dashboard for monitoring and enhancing Amazon Bedrock's Nova speech-to-speech model interactions in a customer support context. The dashboard provides real-time sentiment analysis with visual trend graphs, overall call sentiment visualization via donut charts, AI-powered agent guidance, and key performance metrics including agent/customer talk time percentages and response times. All frontend analytics are powered by Amazon's Nova Lite model, while the backend S2S model features knowledge base integration for improved response accuracy, creating a powerful toolkit for enhancing telco customer support operations.
 
 ## Architecture
-![Diagram describing the basic solution architecture](docs/blog_all.png)
+![Diagram describing the basic solution architecture](docs/architecture.png)
 
 ## Setup
 
@@ -18,12 +18,6 @@ From the root folder, run `npm install`
 
 ### Set up client (front-end)
 1. Deploy an EC2 server by running `cdk deploy` inside `src/server/deploy/`
-2. The application uses environment variables for AWS authentication. You'll have Replace `accessKeyId` and `secretAccessKey` in `src/frontend/config.ts` with your access key and secret key. You'll need to do this even if you've already exported them to your command-line environment.
-```
-AWS_ACCESS_KEY_ID="your-access-key"
-AWS_SECRET_ACCESS_KEY="your-secret-key"
-AWS_DEFAULT_REGION="us-east-1"
-```
 3. To launch the client app, run `npm run client`
 
 ### Set up server (back-end)

@@ -4,11 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node_modules/.bin/vite",
-    "client": "node_modules/.bin/vite",
-    "client:build": "node_modules/.bin/vite build",
-    "client:preview": "node_modules/.bin/vite preview",
-    "server": "ts-node src/server/src/server.ts"
+    "dev": "concurrently \"npm run dev --prefix ./src/frontend\" \"npm run dev --prefix ./src/server\"",
+    "dev:frontend": "npm run dev --prefix ./src/frontend",
+    "dev:server": "npm run dev --prefix ./src/server"
   },
   "author": "aws-telco-prototyping",
   "license": "UNLICENSED",
@@ -16,13 +14,25 @@
     "src/server"
   ],
   "devDependencies": {
-    "vite": "^6.1.0"
+    "@types/node": "^22.15.28",
+    "@vitejs/plugin-react": "^4.5.0",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.1.2",
+    "postcss": "^8.5.4",
+    "tailwindcss": "^4.1.8",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
   },
   "dependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.758.0",
-    "@aws-sdk/credential-providers": "^3.768.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.817.0",
+    "@aws-sdk/client-polly": "^3.817.0",
+    "@aws-sdk/credential-providers": "^3.817.0",
+    "@types/react": "^19.1.6",
     "aws-sdk": "^2.1692.0",
-    "axios": "^1.8.4",
-    "cdk-nag": "^2.35.89"
+    "axios": "^1.9.0",
+    "chart.js": "^4.4.9",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwind": "^4.0.0"
   }
 }
