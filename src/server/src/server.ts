@@ -6,7 +6,7 @@ import express, { Request, Response } from "express";
 import expressWs from "express-ws";
 import { BrowserIntegration } from "./telephony/browser";
 import { Buffer } from "node:buffer";
-import { NovaSonicBidirectionalStreamClient } from "./client";
+import { Conversation, NovaSonicBidirectionalStreamClient } from "./client";
 import { Session, SessionEventData } from "./types";
 import { TwilioIntegration } from "./telephony/twilio";
 import { VonageIntegration } from "./telephony/vonage";
@@ -197,27 +197,27 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
         session = channelStreams.get(channelId)!;
       } else {
         console.log(`Creating new channel: ${channelId}`);
-        session = bedrockClient.createStreamSession(channelId);
+        const conversation = bedrockClient.createConversation(channelId);
         bedrockClient.initiateSession(channelId, ws);
-        channelStreams.set(channelId, session);
+        channelStreams.set(channelId, conversation);
         channelClients.set(channelId, new Set());
 
-        setUpEventHandlersForChannel(session, channelId);
-        await session.setupPromptStart();
-        await session.setupSystemPrompt(
+        setUpEventHandlersForChannel(conversation, channelId);
+        await conversation.setupPromptStart();
+        await conversation.setupSystemPrompt(
           undefined,
           `You are Telly, an AI assistant having a voice conversation. Keep responses concise and conversational.
           You must always check what the next script item is, and you must always use the script as a starting
-          point to decide what to respond the user and what tools to use. You must always rely on your script 
+          point to decide what to respond the user and what tools to use. You must always rely on your script
           to find what to say. You must not change or embellish the script; just present the script to the user,
-          and present them with their options if there are any. No matter what the user says, you should start 
+          and present them with their options if there are any. No matter what the user says, you should start
           by checking the script. You must not tell the user about the script. You must always present the options
           to the user with numbers. If the script tells you to check your tools, you are then allowed to deviate
           from the script.
           Before every response to the user, you MUST check if you have any messages to pass on to the user.
           `
         );
-        await session.setupStartAudio();
+        await conversation.setupStartAudio();
 
         isNewChannel = true;
       }

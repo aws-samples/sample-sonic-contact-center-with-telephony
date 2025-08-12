@@ -20,15 +20,56 @@ import { SessionData, NovaSonicBidirectionalStreamClientConfig } from "./types";
 import { ToolRegistry } from "./tools/ToolRegistry";
 import { WebSocket } from "ws";
 
+export class Conversation {
+  constructor(private session: StreamSession) {}
+
+  onEvent(eventType: string, handler: (data: any) => void): StreamSession {
+    return this.session.onEvent(eventType, handler);
+  }
+
+  async setupPromptStart(): Promise<void> {
+    return this.session.setupPromptStart();
+  }
+
+  async setupSystemPrompt(
+    textConfig: typeof DefaultTextConfiguration = DefaultTextConfiguration,
+    systemPromptContent: string = DefaultSystemPrompt
+  ): Promise<void> {
+    return this.session.setupSystemPrompt(textConfig, systemPromptContent);
+  }
+
+  async setupStartAudio(
+    audioConfig: typeof DefaultAudioInputConfiguration = DefaultAudioInputConfiguration
+  ): Promise<void> {
+    return this.session.setupStartAudio(audioConfig);
+  }
+
+  async streamAudio(audioData: Buffer): Promise<void> {
+    return this.session.streamAudio(audioData);
+  }
+
+  async endAudioContent(): Promise<void> {
+    return this.session.endAudioContent();
+  }
+
+  async endPrompt(): Promise<void> {
+    return this.session.endPrompt();
+  }
+
+  async close(): Promise<void> {
+    return this.session.close();
+  }
+}
+
 export class StreamSession {
-  private audioBufferQueue: Buffer[] = [];
-  private maxQueueSize = 200; // Maximum number of audio chunks to queue
-  private isProcessingAudio = false;
-  private isActive = true;
+  public audioBufferQueue: Buffer[] = [];
+  public maxQueueSize = 200; // Maximum number of audio chunks to queue
+  public isProcessingAudio = false;
+  public isActive = true;
 
   constructor(
-    private sessionId: string,
-    private client: NovaSonicBidirectionalStreamClient
+    public sessionId: string,
+    public client: NovaSonicBidirectionalStreamClient
   ) {}
 
   public onEvent(
@@ -63,7 +104,9 @@ export class StreamSession {
   public async streamAudio(audioData: Buffer): Promise<void> {
     if (this.audioBufferQueue.length >= this.maxQueueSize) {
       this.audioBufferQueue.shift();
-      console.log(`Audio queue full (${this.audioBufferQueue.length} exceeds max size {this.maxQueueSize}), dropping oldest chunk`);
+      console.log(
+        `Audio queue full (${this.audioBufferQueue.length} exceeds max size {this.maxQueueSize}), dropping oldest chunk`
+      );
     }
 
     this.audioBufferQueue.push(audioData);
@@ -101,10 +144,6 @@ export class StreamSession {
         setTimeout(() => this.processAudioQueue(), 0);
       }
     }
-  }
-
-  public getSessionId(): string {
-    return this.sessionId;
   }
 
   public async endAudioContent(): Promise<void> {
@@ -183,6 +222,14 @@ export class NovaSonicBidirectionalStreamClient {
 
   public isCleanupInProgress(sessionId: string): boolean {
     return this.sessionCleanupInProgress.has(sessionId);
+  }
+
+  public createConversation(
+    sessionId: string = randomUUID(),
+    config?: NovaSonicBidirectionalStreamClientConfig
+  ): Conversation {
+    const stream = this.createStreamSession(sessionId, config);
+    return new Conversation(stream);
   }
 
   public createStreamSession(
