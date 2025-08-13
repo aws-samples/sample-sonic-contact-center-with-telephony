@@ -1,8 +1,0 @@
-<tool id="check_connection" function="check_connection" description="Use this tool to check if there's a connection issue in the user's area. Do not assume how many devices are affected without asking."/>
-<tool id="check_for_outage" function="check_for_outage" description="Use this tool to check if there's an outage in the user's area. Do not assume how many devices are affected without asking.">
-  <property name="affectsAllUserDevices" type="boolean" required="true" description="Whether the outage affects all user devices" />
-</tool>
-<tool id="getweathertool" function="getweathertool" description="Get the current weather for a given location, based on its WGS84 coordinates.">
-  <property name="latitude" type="string" required="true" description="Geographical WGS84 latitude of the location." />
-  <property name="longitude" type="string" required="true" description="Geographical WGS84 longitude of the location." />
-</tool>
