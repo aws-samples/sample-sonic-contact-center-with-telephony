@@ -74,13 +74,14 @@ wsInstance.getWss().on("connection", (ws: WebSocket) => {
   console.log("Websocket connection is open");
 });
 
-function setUpEventHandlersForChannel(conversation: Conversation) {
+export function setUpEventHandlersForChannel(conversation: Conversation) {
+  console.log("conversation", conversation)
   function handleConversationEvent(
     conversation: Conversation,
     eventName: string,
     isError: boolean = false
   ) {
-    conversation.onEvent(eventName, (data: SessionEventData) => {
+    conversation.setupOnEvent(eventName, (data: SessionEventData) => {
       console[isError ? "error" : "debug"](eventName, data);
 
       // Broadcast to all clients in this channel
@@ -102,7 +103,7 @@ function setUpEventHandlersForChannel(conversation: Conversation) {
   handleConversationEvent(conversation, "toolResult");
   handleConversationEvent(conversation, "contentEnd");
 
-  conversation.onEvent("streamComplete", () => {
+  conversation.setupOnEvent("streamComplete", () => {
     console.log("Stream completed for channel:", conversation.id);
 
     const clients = channelClients.get(conversation.id) || new Set();
@@ -112,7 +113,7 @@ function setUpEventHandlersForChannel(conversation: Conversation) {
     });
   });
 
-  conversation.onEvent("audioOutput", (data: SessionEventData) => {
+  conversation.setupOnEvent("audioOutput", (data: SessionEventData) => {
     const CHUNK_SIZE_BYTES = 640;
     const SAMPLES_PER_CHUNK = CHUNK_SIZE_BYTES / 2;
 
@@ -147,6 +148,8 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
   console.log(`Client requesting connection to channel: ${conversationId}`);
 
   const sendError = (message: string, details: string) => {
+    const errorMsg = JSON.stringify({ event: "error", data: { message, details } })
+    console.log(`Sending error ${errorMsg}`)
     ws.send(JSON.stringify({ event: "error", data: { message, details } }));
   };
 
@@ -198,8 +201,6 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
 
         channelConversations.set(conversation.id, conversation);
         channelClients.set(conversation.id, new Set());
-
-        setUpEventHandlersForChannel(conversation);
         isNewChannel = true;
       }
 
@@ -233,7 +234,7 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
 
     const conversation = channelConversations.get(conversationId);
     if (!conversation) {
-      sendError("Session not found", "No active session for this channel");
+      sendError("Conversation not found", "No active conversation for this channel");
       return;
     }
 
@@ -367,15 +368,20 @@ process.on("SIGINT", async () => {
   }
 });
 
+// TODO: Fix this - it's broken due to the convo / session distinction
 // Add endpoint to list active channels
+///*
 app.get("/channels", (req: Request, res: Response) => {
   const channels = [];
-  for (const [sessionId, clients] of channelClients.entries()) {
-    channels.push({
-      id: sessionId,
+  for (const [conversationId, clients] of channelClients.entries()) {
+    const json = {
+      id: conversationId,
       clientCount: clients.size,
-      active: bedrockClient.isSessionActive(sessionId),
-    });
+      active: bedrockClient.isSessionActive(conversationId),
+    }
+    console.log(379, json)
+    channels.push(json);
   }
   res.status(200).json({ channels });
 });
+//*/

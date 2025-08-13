@@ -19,6 +19,7 @@ import {
 import { SessionData, NovaSonicBidirectionalStreamClientConfig } from "./types";
 import { ToolRegistry } from "./tools/ToolRegistry";
 import { WebSocket } from "ws";
+import { setUpEventHandlersForChannel } from "./server"
 
 export class Conversation {
   public id: string;
@@ -35,15 +36,31 @@ export class Conversation {
     this.id = randomUUID();
   }
 
+  getCutoverState() {
+    const timeSinceSessionStart = Date.now() - this.session.startTime;
+    if (timeSinceSessionStart > 15000 && this.nextSession) {
+      return "READY TO CUT";
+    } else if (timeSinceSessionStart > 10000 && !this.nextSession) {
+      return "READY TO PREPARE";
+    } else {
+      return "WAITING";
+    }
+  }
+
   async startSession() {
-    await this.initiateNextSession()
-    this.cutOver()
+    await this.initiateNextSession();
+    this.cutOver();
   }
 
   async initiateNextSession() {
     const newSessionId = randomUUID();
-    this.nextSession = this.client.createStreamSession(newSessionId, this.clientConfig);
-    this.client.initiateSession(this.nextSession.sessionId, this.ws);
+    console.log(`Creating session ${newSessionId}`)
+
+    this.nextSession = this.client.createStreamSession(
+      newSessionId,
+      this.clientConfig
+    );
+    this.client.initiateSession(this.ws, this, this.nextSession.sessionId);
 
     await this.setupNextPromptStart();
     await this.setupNextSystemPrompt(
@@ -60,24 +77,22 @@ export class Conversation {
           `
     );
     await this.setupNextStartAudio();
+    setUpEventHandlersForChannel(this);
   }
 
   cutOver() {
+    console.log(`cutting over from ${this.session?.sessionId} to ${this.nextSession.sessionId}`)
     this.session = this.nextSession;
     this.nextSession = null;
+    console.log("cut complete");
   }
 
-  onEvent(eventType: string, handler: (data: any) => void): StreamSession {
-    const eventResponse = this.session.onEvent(eventType, handler);
+  public setupOnEvent(eventType: string, handler: (data: any) => void): StreamSession {
+    return this.nextSession.onEvent(eventType, handler);
+  }
 
-    if (Date.now() - this.session.startTime > 50000) {
-      this.cutOver();
-      console.log("cutting over");
-    } else {
-      console.log(eventType, "cont");
-    }
-
-    return eventResponse;
+  public onEvent(eventType: string, handler: (data: any) => void): StreamSession {
+    return this.session.onEvent(eventType, handler);
   }
 
   async setupNextPromptStart(): Promise<void> {
@@ -104,6 +119,17 @@ export class Conversation {
   }
 
   async streamAudio(audioData: Buffer): Promise<void> {
+    switch (this.getCutoverState()) {
+      case "READY TO CUT":
+        this.cutOver();
+        break;
+      case "READY TO PREPARE":
+        this.initiateNextSession();
+        break;
+      default:
+        break;
+    }
+
     return this.session.streamAudio(audioData);
   }
 
@@ -195,6 +221,7 @@ export class StreamSession {
       ) {
         const audioChunk = this.audioBufferQueue.shift();
         if (audioChunk) {
+          // console.log("219")
           await this.client.streamAudioChunk(this.sessionId, audioChunk);
           processedChunks++;
         }
@@ -232,7 +259,7 @@ export class StreamSession {
 export class NovaSonicBidirectionalStreamClient {
   private bedrockRuntimeClient: BedrockRuntimeClient;
   private inferenceConfig: InferenceConfig;
-  private activeSessions: Map<string, SessionData> = new Map();
+  public activeSessions: Map<string, SessionData> = new Map();
   private sessionLastActivity: Map<string, number> = new Map();
   private sessionCleanupInProgress = new Set<string>();
   private toolRegistry = new ToolRegistry();
@@ -325,10 +352,10 @@ export class NovaSonicBidirectionalStreamClient {
   }
 
   public async initiateSession(
-    sessionId: string,
-    ws: WebSocket
+    ws: WebSocket,
+    conversation: Conversation,
+    sessionId: string
   ): Promise<void> {
-    console.log("di", sessionId)
     const session = this.activeSessions.get(sessionId);
     if (!session) {
       throw new Error(`Stream session ${sessionId} not found`);
@@ -339,7 +366,7 @@ export class NovaSonicBidirectionalStreamClient {
 
       const asyncIterable = this.createSessionAsyncIterable(sessionId);
 
-      console.log(`Starting bidirectional stream for session ${sessionId}...`);
+      console.log(`Starting Nova Sonic stream for session ${sessionId}...`);
 
       const response = await this.bedrockRuntimeClient.send(
         new InvokeModelWithBidirectionalStreamCommand({
@@ -349,10 +376,10 @@ export class NovaSonicBidirectionalStreamClient {
       );
 
       console.log(
-        `Stream established for session ${sessionId}, processing responses...`
+        `Nova Sonic stream established for sessionId ${sessionId}, processing responses...`
       );
 
-      await this.processResponseStream(sessionId, ws, response);
+      await this.processResponseStream(ws, conversation, sessionId, response);
     } catch (error) {
       console.error(`Error in session ${sessionId}: `, error);
       this.dispatchEventForSession(sessionId, "error", {
@@ -527,8 +554,9 @@ export class NovaSonicBidirectionalStreamClient {
   }
 
   private async processResponseStream(
-    sessionId: string,
     ws: WebSocket,
+    conversation: Conversation,
+    sessionId: string,
     response: any
   ): Promise<void> {
     const session = this.activeSessions.get(sessionId);
@@ -549,6 +577,7 @@ export class NovaSonicBidirectionalStreamClient {
 
             try {
               const jsonResponse = JSON.parse(textResponse);
+              console.log(574)
               if (jsonResponse.event?.contentStart) {
                 this.dispatchEvent(
                   sessionId,
@@ -562,6 +591,7 @@ export class NovaSonicBidirectionalStreamClient {
                   jsonResponse.event.textOutput
                 );
               } else if (jsonResponse.event?.audioOutput) {
+                console.log(589)
                 this.dispatchEvent(
                   sessionId,
                   "audioOutput",
@@ -688,7 +718,9 @@ export class NovaSonicBidirectionalStreamClient {
       }
     }
 
+    console.log(`pushing event to ${sessionId}`)
     this.updateSessionActivity(sessionId);
+    // console.log(716, session == null)
     session.queue.push(event);
     session.queueSignal.next();
   }
@@ -812,6 +844,7 @@ export class NovaSonicBidirectionalStreamClient {
     }
     const base64Data = audioData.toString("base64");
 
+    // console.log("838")
     this.addEventToSessionQueue(sessionId, {
       event: {
         audioInput: {
@@ -930,11 +963,14 @@ export class NovaSonicBidirectionalStreamClient {
   }
 
   dispatchEvent(sessionId: string, eventType: string, data: any): void {
+    console.log(960)
     const session = this.activeSessions.get(sessionId);
     if (!session) return;
 
+    console.log(964, session.responseHandlers)
     const handler = session.responseHandlers.get(eventType);
     if (handler) {
+      console.log(966)
       try {
         handler(data);
       } catch (e) {
