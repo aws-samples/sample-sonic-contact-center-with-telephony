@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 import { Buffer } from "node:buffer";
 import { Request, Response } from "express";
-import { Session } from "../types";
+import { Conversation } from "../client";
 import { mulaw } from "alawmulaw";
 
 export class TwilioIntegration {
@@ -53,29 +53,29 @@ export class TwilioIntegration {
 
   private messageHandlers = new Map<
     string,
-    (jsonMsg: any, session: Session) => Promise<void>
+    (jsonMsg: any, conversation: Conversation) => Promise<void>
   >([
-    [ 
+    [
       "start",
-      async (jsonMsg, session) => {
-        session.streamId = jsonMsg.streamSid;
-        console.log(`Started twilio with streamId=${session.streamId}`);
+      async (jsonMsg, conversation) => {
+        conversation.twilioStreamSid = jsonMsg.streamSid;
+        console.log(`Started twilio with streamId=${conversation.twilioStreamSid}`);
       }
     ],
     [
       "media",
-      async (jsonMsg, session) => {
+      async (jsonMsg, conversation) => {
         const audioInput = Buffer.from(jsonMsg.media.payload, "base64");
         const pcmSamples = mulaw.decode(audioInput);
         const audioBuffer = Buffer.from(pcmSamples.buffer);
-        await session.streamAudio(audioBuffer);
+        await conversation.streamAudio(audioBuffer);
       },
     ],
   ]);
 
   public async tryProcessAudioInput(
     msg: string,
-    session: Session
+    conversation: Conversation
   ): Promise<void> {
     if (!this.isOn) return;
 
@@ -84,7 +84,7 @@ export class TwilioIntegration {
     try {
       const handler = this.messageHandlers.get(data.event);
       handler
-        ? await handler(data, session)
+        ? await handler(data, conversation)
         : console.error("Caught unclassified Twilio message:", data);
     } catch (error) {
       console.error("Error processing Twilio audio data:", error);

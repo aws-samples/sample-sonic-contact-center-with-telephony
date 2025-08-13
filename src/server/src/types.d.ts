@@ -58,7 +58,8 @@ interface Session {
   endAudioContent: () => Promise<void>;
   endPrompt: () => Promise<void>;
   close: () => Promise<void>;
-  streamId?: string | undefined;
+  sessionId?: string | undefined;
+  twilioStreamSid?: string | undefined;
 }
 
 interface ActiveSession {

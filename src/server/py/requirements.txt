@@ -1,6 +1,0 @@
-aws_sdk_bedrock_runtime>=0.0.1
-smithy-aws-core>=0.0.1
-dotenv
-boto3
-websockets
-
