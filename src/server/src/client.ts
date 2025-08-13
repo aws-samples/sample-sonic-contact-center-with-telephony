@@ -38,9 +38,9 @@ export class Conversation {
 
   getCutoverState() {
     const timeSinceSessionStart = Date.now() - this.session.startTime;
-    if (timeSinceSessionStart > 15000 && this.nextSession) {
+    if (timeSinceSessionStart > 42000 && this.nextSession) {
       return "READY TO CUT";
-    } else if (timeSinceSessionStart > 10000 && !this.nextSession) {
+    } else if (timeSinceSessionStart > 40000 && !this.nextSession) {
       return "READY TO PREPARE";
     } else {
       return "WAITING";
