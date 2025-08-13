@@ -12,7 +12,6 @@ import { TwilioIntegration } from "./telephony/twilio";
 import { VonageIntegration } from "./telephony/vonage";
 import { fromEnv } from "@aws-sdk/credential-providers";
 import { v4 as uuidv4 } from "uuid";
-// import { GenesysIntegration } from "./telephony/genesys";
 
 const app = express();
 const wsInstance = expressWs(app);
@@ -40,7 +39,6 @@ const browser = new BrowserIntegration(
 );
 const vonage = new VonageIntegration(isTrue(process.env.VONAGE_ENABLED), app);
 const twilio = new TwilioIntegration(isTrue(process.env.TWILIO_ENABLED), app);
-// const genesys = new GenesysIntegration(isTrue(process.env.GENESYS_ENABLED), app);
 
 /* Periodically check for and close inactive sessions (every minute).
  * Sessions with no activity for over 5 minutes will be force closed
@@ -54,7 +52,7 @@ setInterval(() => {
 
     const fiveMinsInMs = 5 * 60 * 1000;
     if (now - lastActivity > fiveMinsInMs) {
-      console.log(`Closing inactive session ${sessionId} due to inactivity.`);
+      console.log(`Closing inactive conversation ${sessionId} due to inactivity.`);
       try {
         bedrockClient.closeSession(sessionId);
       } catch (error: unknown) {
@@ -68,26 +66,26 @@ setInterval(() => {
 }, 60000);
 
 // Track active websocket connections with their session IDs
-const channelStreams = new Map<string, Session>(); // channelId -> Session
-const channelClients = new Map<string, Set<WebSocket>>(); // channelId -> Set of connected clients
-const clientChannels = new Map<WebSocket, string>(); // WebSocket -> channelId
+const channelConversations = new Map<string, Conversation>(); // conversationId -> Session
+const channelClients = new Map<string, Set<WebSocket>>(); // conversationId -> Set of clients
+const clientChannels = new Map<WebSocket, string>(); // WebSocket client -> conversationId
 
 wsInstance.getWss().on("connection", (ws: WebSocket) => {
   console.log("Websocket connection is open");
 });
 
-function setUpEventHandlersForChannel(session: Session, channelId: string) {
-  function handleSessionEvent(
-    session: Session,
-    channelId: string,
+function setUpEventHandlersForChannel(conversation: Conversation) {
+  function handleConversationEvent(
+    conversation: Conversation,
     eventName: string,
     isError: boolean = false
   ) {
-    session.onEvent(eventName, (data: SessionEventData) => {
+    console.log("handling")
+    conversation.onEvent(eventName, (data: SessionEventData) => {
       console[isError ? "error" : "debug"](eventName, data);
 
       // Broadcast to all clients in this channel
-      const clients = channelClients.get(channelId) || new Set();
+      const clients = channelClients.get(conversation.id) || new Set();
       const message = JSON.stringify({ event: { [eventName]: { ...data } } });
 
       clients.forEach((client) => {
@@ -98,28 +96,28 @@ function setUpEventHandlersForChannel(session: Session, channelId: string) {
     });
   }
 
-  handleSessionEvent(session, channelId, "contentStart");
-  handleSessionEvent(session, channelId, "textOutput");
-  handleSessionEvent(session, channelId, "error", true);
-  handleSessionEvent(session, channelId, "toolUse");
-  handleSessionEvent(session, channelId, "toolResult");
-  handleSessionEvent(session, channelId, "contentEnd");
+  handleConversationEvent(conversation, "contentStart");
+  handleConversationEvent(conversation, "textOutput");
+  handleConversationEvent(conversation, "error", true);
+  handleConversationEvent(conversation, "toolUse");
+  handleConversationEvent(conversation, "toolResult");
+  handleConversationEvent(conversation, "contentEnd");
 
-  session.onEvent("streamComplete", () => {
-    console.log("Stream completed for channel:", channelId);
+  conversation.onEvent("streamComplete", () => {
+    console.log("Stream completed for channel:", conversation.id);
 
-    const clients = channelClients.get(channelId) || new Set();
+    const clients = channelClients.get(conversation.id) || new Set();
     const message = JSON.stringify({ event: "streamComplete" });
     clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) client.send(message);
     });
   });
 
-  session.onEvent("audioOutput", (data: SessionEventData) => {
+  conversation.onEvent("audioOutput", (data: SessionEventData) => {
     const CHUNK_SIZE_BYTES = 640;
     const SAMPLES_PER_CHUNK = CHUNK_SIZE_BYTES / 2;
 
-    const clients = channelClients.get(channelId) || new Set();
+    const clients = channelClients.get(conversation.id) || new Set();
 
     const buffer = Buffer.from(data["content"], "base64");
     const pcmSamples = new Int16Array(
@@ -137,43 +135,45 @@ function setUpEventHandlersForChannel(session: Session, channelId: string) {
       });
       offset += SAMPLES_PER_CHUNK;
     }
-    // if (genesys.isOn) genesys.tryProcessAudioOutput(pcmSamples, clients, session.streamId!);
     // Twilio takes a different format for audio samples.
     if (twilio.isOn)
-      twilio.tryProcessAudioOutput(pcmSamples, clients, session.streamId!);
+      twilio.tryProcessAudioOutput(pcmSamples, clients, conversation.twilioStreamSid!);
     if (browser.isOn) browser.tryProcessAudioOutput(data, clients);
   });
 }
 
 wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
   // Get channel from query parameters or use a default
-  const channelId = req.query.channel?.toString() || uuidv4();
-  console.log(`Client requesting connection to channel: ${channelId}`);
+  console.log("pocking")
+  const conversationId = req.query.channel?.toString() || uuidv4();
+  console.log(`Client requesting connection to channel: ${conversationId}`);
 
   const sendError = (message: string, details: string) => {
+    console.log("eraa")
     ws.send(JSON.stringify({ event: "error", data: { message, details } }));
   };
 
-  async function tryProcessNovaSonicMessage(msg: any, session: Session) {
+  async function tryProcessNovaSonicMessage(msg: any, conversation: Conversation) {
     try {
+      console.log("handling2")
       const jsonMsg = JSON.parse(msg.toString());
 
       // Create handler functions.
-      const handlePromptStart = async (jsonMsg, session) =>
-        await session.setupPromptStart();
-      const handleSystemPrompt = async (jsonMsg, session) =>
-        await session.setupSystemPrompt(undefined, jsonMsg.data);
-      const handleAudioStart = async (jsonMsg, session) =>
-        await session.setupStartAudio();
-      const handleStopAudio = async (jsonMsg, session) => {
-        await session.endAudioContent();
-        await session.endPrompt();
+      const handlePromptStart = async (jsonMsg, conversation) =>
+        await conversation.setupPromptStart();
+      const handleSystemPrompt = async (jsonMsg, conversation) =>
+        await conversation.setupSystemPrompt(undefined, jsonMsg.data);
+      const handleAudioStart = async (jsonMsg, conversation) =>
+        await conversation.setupStartAudio();
+      const handleStopAudio = async (jsonMsg, conversation) => {
+        await conversation.endAudioContent();
+        await conversation.endPrompt();
       };
 
       // Create map of [ messageTag -> handlerFunction ]
       let novaSonicHandlers = new Map<
         string,
-        (jsonMsg: any, session: Session) => Promise<void>
+        (jsonMsg: any, conversation: Conversation) => Promise<void>
       >([
         ["promptStart", handlePromptStart],
         ["systemPrompt", handleSystemPrompt],
@@ -183,57 +183,45 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
 
       // Try use JSON messages with `.event` prop.
       let handler = novaSonicHandlers.get(jsonMsg.type);
-      if (handler) await handler(jsonMsg, session);
+      if (handler) await handler(jsonMsg, conversation);
     } catch (e) {}
   }
 
   const initializeOrJoinChannel = async () => {
+    console.log("pooking")
     try {
-      let session: Session;
+      let conversation: Conversation;
       let isNewChannel = false;
 
-      if (channelStreams.has(channelId)) {
-        console.log(`Client joining existing channel: ${channelId}`);
-        session = channelStreams.get(channelId)!;
+      if (channelConversations.has(conversationId)) {
+        console.log(`Client joining existing channel: ${conversationId}`);
+        conversation = channelConversations.get(conversationId)!;
       } else {
-        console.log(`Creating new channel: ${channelId}`);
-        const conversation = bedrockClient.createConversation(channelId);
-        bedrockClient.initiateSession(channelId, ws);
-        channelStreams.set(channelId, conversation);
-        channelClients.set(channelId, new Set());
+        console.log(`Creating new channel: ${conversationId}`);
+        conversation = bedrockClient.createConversation(conversationId, ws);
+        await conversation.startSession()
 
-        setUpEventHandlersForChannel(conversation, channelId);
-        await conversation.setupPromptStart();
-        await conversation.setupSystemPrompt(
-          undefined,
-          `You are Telly, an AI assistant having a voice conversation. Keep responses concise and conversational.
-          You must always check what the next script item is, and you must always use the script as a starting
-          point to decide what to respond the user and what tools to use. You must always rely on your script
-          to find what to say. You must not change or embellish the script; just present the script to the user,
-          and present them with their options if there are any. No matter what the user says, you should start
-          by checking the script. You must not tell the user about the script. You must always present the options
-          to the user with numbers. If the script tells you to check your tools, you are then allowed to deviate
-          from the script.
-          Before every response to the user, you MUST check if you have any messages to pass on to the user.
-          `
-        );
-        await conversation.setupStartAudio();
+        channelConversations.set(conversation.id, conversation);
+        channelClients.set(conversation.id, new Set());
 
+        setUpEventHandlersForChannel(conversation);
         isNewChannel = true;
       }
+      console.log("201")
 
       // Add this client to the channel.
-      const clients = channelClients.get(channelId)!;
+      const clients = channelClients.get(conversation.id)!;
+      console.log("clonk", clients)
       clients.add(ws);
-      clientChannels.set(ws, channelId);
+      clientChannels.set(ws, conversation.id);
 
-      console.log(`Channel ${channelId} has ${clients.size} connected clients`);
+      console.log(`Channel ${conversation.id} has ${clients.size} connected clients`);
 
       // Notify client that connection is successful.
       ws.send(
         JSON.stringify({
           event: "sessionReady",
-          message: `Connected to channel ${channelId}`,
+          message: `Connected to channel ${conversation.id}`,
           isNewChannel: isNewChannel,
         })
       );
@@ -244,53 +232,57 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
   };
 
   const handleMessage = async (msg: Buffer | string) => {
-    const channelId = clientChannels.get(ws);
-    if (!channelId) {
+    console.log("handling3")
+    const conversationId = clientChannels.get(ws);
+    console.log("convoid", conversationId)
+    if (!conversationId) {
       sendError("Channel not found", "No active channel for this connection");
       return;
     }
 
-    const session = channelStreams.get(channelId);
-    if (!session) {
+    const conversation = channelConversations.get(conversationId);
+    if (!conversation) {
       sendError("Session not found", "No active session for this channel");
       return;
     }
+    console.log("convo", conversation)
 
     try {
       if (browser.isOn)
-        await browser.tryProcessAudioInput(msg as Buffer, session);
+        console.log("aug12-2")
+        await browser.tryProcessAudioInput(msg as Buffer, conversation);
       if (vonage.isOn)
-        await vonage.tryProcessAudioInput(msg as Buffer, session);
+        await vonage.tryProcessAudioInput(msg as Buffer, conversation);
       if (twilio.isOn)
-        await twilio.tryProcessAudioInput(msg as string, session);
-      await tryProcessNovaSonicMessage(msg, session);
+        await twilio.tryProcessAudioInput(msg as string, conversation);
+      await tryProcessNovaSonicMessage(msg, conversation);
     } catch (error) {
       sendError("Error processing message", String(error));
     }
   };
 
   const handleClose = async () => {
-    const channelId = clientChannels.get(ws);
-    if (!channelId) {
+    const conversationId = clientChannels.get(ws);
+    if (!conversationId) {
       console.log("No channel to clean up for this connection");
       return;
     }
 
-    const clients = channelClients.get(channelId);
+    const clients = channelClients.get(conversationId);
     if (clients) {
       clients.delete(ws);
       console.log(
-        `Client disconnected from channel ${channelId}, ${clients.size} clients remaining`
+        `Client disconnected from channel ${conversationId}, ${clients.size} clients remaining`
       );
 
       // If this was the last client, clean up the channel
       if (clients.size === 0) {
         console.log(
-          `Last client left channel ${channelId}, cleaning up resources`
+          `Last client left channel ${conversationId}, cleaning up resources`
         );
 
-        const session = channelStreams.get(channelId);
-        if (session && bedrockClient.isSessionActive(channelId)) {
+        const session = channelConversations.get(conversationId);
+        if (session && bedrockClient.isSessionActive(conversationId)) {
           try {
             await Promise.race([
               (async () => {
@@ -305,23 +297,23 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
                 )
               ),
             ]);
-            console.log(`Successfully cleaned up channel: ${channelId}`);
+            console.log(`Successfully cleaned up channel: ${conversationId}`);
           } catch (error) {
-            console.error(`Error cleaning up channel ${channelId}:`, error);
+            console.error(`Error cleaning up channel ${conversationId}:`, error);
             try {
-              bedrockClient.closeSession(channelId);
-              console.log(`Force closed session for channel: ${channelId}`);
+              bedrockClient.closeSession(conversationId);
+              console.log(`Force closed session for channel: ${conversationId}`);
             } catch (e) {
               console.error(
-                `Failed to force close session for channel ${channelId}:`,
+                `Failed to force close session for channel ${conversationId}:`,
                 e
               );
             }
           }
         }
 
-        channelStreams.delete(channelId);
-        channelClients.delete(channelId);
+        channelConversations.delete(conversationId);
+        channelClients.delete(conversationId);
       }
     }
     clientChannels.delete(ws);
@@ -360,12 +352,12 @@ process.on("SIGINT", async () => {
   try {
     const sessionPromises: Promise<void>[] = [];
 
-    for (const [channelId, session] of channelStreams.entries()) {
-      console.log(`Closing session for channel ${channelId} during shutdown`);
+    for (const [sessionId, session] of channelConversations.entries()) {
+      console.log(`Closing session for channel ${sessionId} during shutdown`);
 
-      sessionPromises.push(bedrockClient.closeSession(channelId));
+      sessionPromises.push(bedrockClient.closeSession(sessionId));
 
-      const clients = channelClients.get(channelId) || new Set();
+      const clients = channelClients.get(sessionId) || new Set();
       clients.forEach((ws) => {
         if (ws.readyState === WebSocket.OPEN) ws.close();
       });
@@ -389,11 +381,11 @@ process.on("SIGINT", async () => {
 // Add endpoint to list active channels
 app.get("/channels", (req: Request, res: Response) => {
   const channels = [];
-  for (const [channelId, clients] of channelClients.entries()) {
+  for (const [sessionId, clients] of channelClients.entries()) {
     channels.push({
-      id: channelId,
+      id: sessionId,
       clientCount: clients.size,
-      active: bedrockClient.isSessionActive(channelId),
+      active: bedrockClient.isSessionActive(sessionId),
     });
   }
   res.status(200).json({ channels });

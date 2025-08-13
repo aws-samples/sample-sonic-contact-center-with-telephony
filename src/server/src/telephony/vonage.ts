@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { Session } from "../types";
+import { Conversation } from "../client";
 import { Buffer } from "node:buffer";
 
 export interface WebhookResponse {
@@ -50,7 +50,7 @@ export class VonageIntegration {
         ],
       },
     ];
-    
+
     res.status(200).json(nccoResponse);
   }
 
@@ -59,12 +59,12 @@ export class VonageIntegration {
     res.sendStatus(200);
   }
 
-  public async tryProcessAudioInput(message: Buffer, session: Session): Promise<void> {
+  public async tryProcessAudioInput(message: Buffer, conversation: Conversation): Promise<void> {
     if (!this.isOn) return;
-    
+
     try {
       const audioBuffer = Buffer.from(message); // TODO: Needed?
-      await session.streamAudio(audioBuffer);
+      await conversation.streamAudio(audioBuffer);
     } catch (error) {
       console.error("Error processing Vonage audio data:", error);
     }

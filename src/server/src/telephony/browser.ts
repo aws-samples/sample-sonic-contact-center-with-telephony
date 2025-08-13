@@ -1,4 +1,4 @@
-import { Session } from "../types";
+import { Conversation } from "../client";
 
 export class BrowserIntegration {
   isOn: boolean;
@@ -10,7 +10,7 @@ export class BrowserIntegration {
     console.log("Browser integration initialized");
   }
 
-  async tryProcessAudioInput(msg: Buffer, session: Session) {
+  async tryProcessAudioInput(msg: Buffer, conversation: Conversation) {
     if (!this.isOn) return
 
     try {
@@ -19,7 +19,7 @@ export class BrowserIntegration {
         jsonMsg.event.audioInput.content,
         "base64"
       );
-      await session.streamAudio(audioBuffer);
+      await conversation.streamAudio(audioBuffer);
     } catch (e) {}
   }
 
