@@ -80,7 +80,6 @@ function setUpEventHandlersForChannel(conversation: Conversation) {
     eventName: string,
     isError: boolean = false
   ) {
-    console.log("handling")
     conversation.onEvent(eventName, (data: SessionEventData) => {
       console[isError ? "error" : "debug"](eventName, data);
 
@@ -144,18 +143,15 @@ function setUpEventHandlersForChannel(conversation: Conversation) {
 
 wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
   // Get channel from query parameters or use a default
-  console.log("pocking")
   const conversationId = req.query.channel?.toString() || uuidv4();
   console.log(`Client requesting connection to channel: ${conversationId}`);
 
   const sendError = (message: string, details: string) => {
-    console.log("eraa")
     ws.send(JSON.stringify({ event: "error", data: { message, details } }));
   };
 
   async function tryProcessNovaSonicMessage(msg: any, conversation: Conversation) {
     try {
-      console.log("handling2")
       const jsonMsg = JSON.parse(msg.toString());
 
       // Create handler functions.
@@ -188,7 +184,6 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
   }
 
   const initializeOrJoinChannel = async () => {
-    console.log("pooking")
     try {
       let conversation: Conversation;
       let isNewChannel = false;
@@ -207,11 +202,9 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
         setUpEventHandlersForChannel(conversation);
         isNewChannel = true;
       }
-      console.log("201")
 
       // Add this client to the channel.
       const clients = channelClients.get(conversation.id)!;
-      console.log("clonk", clients)
       clients.add(ws);
       clientChannels.set(ws, conversation.id);
 
@@ -232,9 +225,7 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
   };
 
   const handleMessage = async (msg: Buffer | string) => {
-    console.log("handling3")
     const conversationId = clientChannels.get(ws);
-    console.log("convoid", conversationId)
     if (!conversationId) {
       sendError("Channel not found", "No active channel for this connection");
       return;
@@ -245,11 +236,9 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
       sendError("Session not found", "No active session for this channel");
       return;
     }
-    console.log("convo", conversation)
 
     try {
       if (browser.isOn)
-        console.log("aug12-2")
         await browser.tryProcessAudioInput(msg as Buffer, conversation);
       if (vonage.isOn)
         await vonage.tryProcessAudioInput(msg as Buffer, conversation);
