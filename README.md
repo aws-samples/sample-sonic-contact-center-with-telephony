@@ -4,7 +4,7 @@ Authors: Andrew Young, Reilly Manton
 This solution introduces a comprehensive analytics dashboard for monitoring and enhancing Amazon Bedrock's Nova speech-to-speech model interactions in a customer support context. The dashboard provides real-time sentiment analysis with visual trend graphs, overall call sentiment visualization via donut charts, AI-powered agent guidance, and key performance metrics including agent/customer talk time percentages and response times. All frontend analytics are powered by Amazon's Nova Lite model, while the backend S2S model features knowledge base integration for improved response accuracy, creating a powerful toolkit for enhancing telco customer support operations.
 
 ## Architecture
-![Diagram describing the basic solution architecture](docs/architecture.png)
+![Diagram describing the basic solution architecture](docs/blog_all.png)
 
 ## Setup
 
