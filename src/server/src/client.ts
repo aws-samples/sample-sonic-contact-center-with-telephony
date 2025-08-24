@@ -160,6 +160,13 @@ export class StreamSession {
     this.startTime = Date.now();
   }
 
+  public async setupHistoryForConversationResumtion(
+    textConfig: typeof DefaultTextConfiguration = DefaultTextConfiguration,
+    content: string,
+    role: string): Promise<void> {
+    this.client.setupHistoryEventForConversationResumption(this.sessionId, textConfig, content, role);
+  }
+
   public onEvent(
     eventType: string,
     handler: (data: any) => void
@@ -289,6 +296,49 @@ export class NovaSonicBidirectionalStreamClient {
       topP: 0.9,
       temperature: 0.7,
     };
+  }
+
+  public setupHistoryEventForConversationResumption(sessionId: string,
+    textConfig: typeof DefaultTextConfiguration = DefaultTextConfiguration,
+    content: string,
+    role: string
+  ): void {
+    console.log(`Setting up systemPrompt events for session ${sessionId}...`);
+    const session = this.activeSessions.get(sessionId);
+    if (!session) return;
+    // Text content start
+    const textPromptID = randomUUID();
+    this.addEventToSessionQueue(sessionId, {
+      event: {
+        contentStart: {
+          promptName: session.promptName,
+          contentName: textPromptID,
+          type: "TEXT",
+          interactive: true,
+          textInputConfiguration: textConfig,
+        },
+      }
+    });
+
+    this.addEventToSessionQueue(sessionId, {
+      event: {
+        textInput: {
+          promptName: session.promptName,
+          contentName: textPromptID,
+          content: content,
+          role: role,
+        },
+      }
+    });
+
+    this.addEventToSessionQueue(sessionId, {
+      event: {
+        contentEnd: {
+          promptName: session.promptName,
+          contentName: textPromptID,
+        },
+      }
+    });
   }
 
   isSessionActive(sessionId: string): boolean {
