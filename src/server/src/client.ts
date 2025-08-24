@@ -27,6 +27,7 @@ export class Conversation {
   public sessionId: string;
   public twilioStreamSid: string | null;
   public session: StreamSession | null;
+  public conversationHistory: Array<{content: string, role: string}> = [];
 
   constructor(
     private client: NovaSonicBidirectionalStreamClient,
@@ -38,9 +39,9 @@ export class Conversation {
 
   getCutoverState() {
     const timeSinceSessionStart = Date.now() - this.session.startTime;
-    if (timeSinceSessionStart > 42000 && this.nextSession) {
+    if (timeSinceSessionStart > 10000 && this.nextSession) {
       return "READY TO CUT";
-    } else if (timeSinceSessionStart > 40000 && !this.nextSession) {
+    } else if (timeSinceSessionStart > 5000 && !this.nextSession) {
       return "READY TO PREPARE";
     } else {
       return "WAITING";
@@ -82,6 +83,19 @@ export class Conversation {
 
   cutOver() {
     console.log(`cutting over from ${this.session?.sessionId} to ${this.nextSession.sessionId}`)
+
+    // Transfer conversation history to the new session
+    if (this.conversationHistory.length > 0) {
+      console.log(`Transferring ${this.conversationHistory.length} history items to new session`);
+      for (const historyItem of this.conversationHistory) {
+        this.nextSession.setupHistoryForConversationResumtion(
+          undefined,
+          historyItem.content,
+          historyItem.role
+        );
+      }
+    }
+
     this.session = this.nextSession;
     this.nextSession = null;
     console.log("cut complete");

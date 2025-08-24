@@ -74,6 +74,8 @@ wsInstance.getWss().on("connection", (ws: WebSocket) => {
   console.log("Websocket connection is open");
 });
 
+var isFinalGeneration = false
+
 export function setUpEventHandlersForChannel(conversation: Conversation) {
   console.log("conversation", conversation)
   function handleConversationEvent(
@@ -83,6 +85,20 @@ export function setUpEventHandlersForChannel(conversation: Conversation) {
   ) {
     conversation.setupOnEvent(eventName, (data: SessionEventData) => {
       console[isError ? "error" : "debug"](eventName, data);
+
+      // Capture conversation history for cutover, but ONLY if the generation stage is final.
+      if (eventName === "contentStart" && data.additionalModelFields) {
+         if (data.additionalModelFields?.includes("FINAL")) {
+           isFinalGeneration = true
+         } else if (data.additionalModelFields?.includes("SPECULATIVE")) {
+           isFinalGeneration = false
+         }
+      }
+      if (eventName === "textOutput" && data.content && isFinalGeneration) {
+        conversation.conversationHistory.push({ content: data.content, role: data.role });
+        console.log("Hist", conversation.conversationHistory)
+        isFinalGeneration = false;
+      }
 
       // Broadcast to all clients in this channel
       const clients = channelClients.get(conversation.id) || new Set();
