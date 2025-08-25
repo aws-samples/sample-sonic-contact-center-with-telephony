@@ -19,7 +19,14 @@ import {
 import { SessionData, NovaSonicBidirectionalStreamClientConfig } from "./types";
 import { ToolRegistry } from "./tools/ToolRegistry";
 import { WebSocket } from "ws";
-import { setUpEventHandlersForChannel } from "./server"
+import { setUpEventHandlersForChannel } from "./server";
+
+enum cutoverState {
+  readyToPrepare,
+  waiting,
+}
+
+const TIME_TO_PREPARE_CUTOVER_IN_S = 5 * 60 * 1000;  // 5 minutes.
 
 export class Conversation {
   public id: string;
@@ -27,6 +34,8 @@ export class Conversation {
   public sessionId: string;
   public twilioStreamSid: string | null;
   public session: StreamSession | null;
+  public conversationHistory: Array<{ content: string; role: string }> = [];
+  private useAllStreams: boolean = false;
 
   constructor(
     private client: NovaSonicBidirectionalStreamClient,
@@ -36,15 +45,11 @@ export class Conversation {
     this.id = randomUUID();
   }
 
-  getCutoverState() {
+  isReadyToPrepareCutover() {
     const timeSinceSessionStart = Date.now() - this.session.startTime;
-    if (timeSinceSessionStart > 42000 && this.nextSession) {
-      return "READY TO CUT";
-    } else if (timeSinceSessionStart > 40000 && !this.nextSession) {
-      return "READY TO PREPARE";
-    } else {
-      return "WAITING";
-    }
+    return (
+      timeSinceSessionStart > TIME_TO_PREPARE_CUTOVER_IN_S && !this.nextSession
+    );
   }
 
   async startSession() {
@@ -53,8 +58,9 @@ export class Conversation {
   }
 
   async initiateNextSession() {
+    // Stream to all sessions until we cut over.
     const newSessionId = randomUUID();
-    console.log(`Creating session ${newSessionId}`)
+    console.log(`Creating session ${newSessionId}`);
 
     this.nextSession = this.client.createStreamSession(
       newSessionId,
@@ -62,9 +68,9 @@ export class Conversation {
     );
     this.client.initiateSession(this.ws, this, this.nextSession.sessionId);
 
-    await this.setupNextPromptStart();
-    await this.setupNextSystemPrompt(
-      undefined,
+    await this.nextSession.setupPromptStart();
+    await this.nextSession.setupSystemPrompt(
+      DefaultTextConfiguration,
       `You are Telly, an AI assistant having a voice conversation. Keep responses concise and conversational.
           You must always check what the next script item is, and you must always use the script as a starting
           point to decide what to respond the user and what tools to use. You must always rely on your script
@@ -76,40 +82,50 @@ export class Conversation {
           Before every response to the user, you MUST check if you have any messages to pass on to the user.
           `
     );
-    await this.setupNextStartAudio();
+    await this.nextSession.setupStartAudio(DefaultAudioInputConfiguration);
     setUpEventHandlersForChannel(this);
+    this.useAllStreams = true;
   }
 
   cutOver() {
-    console.log(`cutting over from ${this.session?.sessionId} to ${this.nextSession.sessionId}`)
+    console.log(
+      `Cutting over from ${this.session?.sessionId} to ${this.nextSession.sessionId}.`
+    );
+
+    // Transfer conversation history to the new session
+    if (this.conversationHistory.length > 0) {
+      console.log(
+        `Transferring ${this.conversationHistory.length} history items to new session`
+      );
+      for (const historyItem of this.conversationHistory) {
+        this.nextSession.setupHistoryForConversationResumtion(
+          undefined,
+          historyItem.content,
+          historyItem.role
+        );
+      }
+
+    }
+
     this.session = this.nextSession;
     this.nextSession = null;
-    console.log("cut complete");
+    this.useAllStreams = false;
+    console.log("Cutover complete.");
   }
 
-  public setupOnEvent(eventType: string, handler: (data: any) => void): StreamSession {
+  public setupOnEvent(
+    eventType: string,
+    handler: (data: any) => void
+  ): StreamSession {
     return this.nextSession.onEvent(eventType, handler);
   }
 
-  public onEvent(eventType: string, handler: (data: any) => void): StreamSession {
+  public onEvent(
+    eventType: string,
+    handler: (data: any) => void
+  ): StreamSession {
+    if (this.useAllStreams) this.nextSession.onEvent(eventType, handler);
     return this.session.onEvent(eventType, handler);
-  }
-
-  async setupNextPromptStart(): Promise<void> {
-    return this.nextSession.setupPromptStart();
-  }
-
-  async setupNextSystemPrompt(
-    textConfig: typeof DefaultTextConfiguration = DefaultTextConfiguration,
-    systemPromptContent: string = DefaultSystemPrompt
-  ): Promise<void> {
-    return this.nextSession.setupSystemPrompt(textConfig, systemPromptContent);
-  }
-
-  async setupNextStartAudio(
-    audioConfig: typeof DefaultAudioInputConfiguration = DefaultAudioInputConfiguration
-  ): Promise<void> {
-    return this.nextSession.setupStartAudio(audioConfig);
   }
 
   async setupStartAudio(
@@ -119,25 +135,17 @@ export class Conversation {
   }
 
   async streamAudio(audioData: Buffer): Promise<void> {
-    switch (this.getCutoverState()) {
-      case "READY TO CUT":
-        this.cutOver();
-        break;
-      case "READY TO PREPARE":
-        this.initiateNextSession();
-        break;
-      default:
-        break;
-    }
-
+    if (this.useAllStreams) this.nextSession.streamAudio(audioData)
     return this.session.streamAudio(audioData);
   }
 
   async endAudioContent(): Promise<void> {
+    if (this.useAllStreams) this.nextSession.endAudioContent()
     return this.session.endAudioContent();
   }
 
   async endPrompt(): Promise<void> {
+    if (this.useAllStreams) this.nextSession.endPrompt()
     return this.session.endPrompt();
   }
 
@@ -158,6 +166,19 @@ export class StreamSession {
     public client: NovaSonicBidirectionalStreamClient
   ) {
     this.startTime = Date.now();
+  }
+
+  public async setupHistoryForConversationResumtion(
+    textConfig: typeof DefaultTextConfiguration = DefaultTextConfiguration,
+    content: string,
+    role: string
+  ): Promise<void> {
+    this.client.setupHistoryEventForConversationResumption(
+      this.sessionId,
+      textConfig,
+      content,
+      role
+    );
   }
 
   public onEvent(
@@ -290,6 +311,50 @@ export class NovaSonicBidirectionalStreamClient {
       topP: 0.9,
       temperature: 0.7,
     };
+  }
+
+  public setupHistoryEventForConversationResumption(
+    sessionId: string,
+    textConfig: typeof DefaultTextConfiguration = DefaultTextConfiguration,
+    content: string,
+    role: string
+  ): void {
+    console.log(`Setting up systemPrompt events for session ${sessionId}...`);
+    const session = this.activeSessions.get(sessionId);
+    if (!session) return;
+    // Text content start
+    const textPromptID = randomUUID();
+    this.addEventToSessionQueue(sessionId, {
+      event: {
+        contentStart: {
+          promptName: session.promptName,
+          contentName: textPromptID,
+          type: "TEXT",
+          interactive: true,
+          textInputConfiguration: textConfig,
+        },
+      },
+    });
+
+    this.addEventToSessionQueue(sessionId, {
+      event: {
+        textInput: {
+          promptName: session.promptName,
+          contentName: textPromptID,
+          content: content,
+          role: role,
+        },
+      },
+    });
+
+    this.addEventToSessionQueue(sessionId, {
+      event: {
+        contentEnd: {
+          promptName: session.promptName,
+          contentName: textPromptID,
+        },
+      },
+    });
   }
 
   isSessionActive(sessionId: string): boolean {
@@ -718,7 +783,7 @@ export class NovaSonicBidirectionalStreamClient {
       }
     }
 
-    console.log(`pushing event to ${sessionId}`)
+    console.log(`pushing event to ${sessionId}`);
     this.updateSessionActivity(sessionId);
     // console.log(716, session == null)
     session.queue.push(event);

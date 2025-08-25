@@ -52,7 +52,9 @@ setInterval(() => {
 
     const fiveMinsInMs = 5 * 60 * 1000;
     if (now - lastActivity > fiveMinsInMs) {
-      console.log(`Closing inactive conversation ${sessionId} due to inactivity.`);
+      console.log(
+        `Closing inactive conversation ${sessionId} due to inactivity.`
+      );
       try {
         bedrockClient.closeSession(sessionId);
       } catch (error: unknown) {
@@ -74,8 +76,28 @@ wsInstance.getWss().on("connection", (ws: WebSocket) => {
   console.log("Websocket connection is open");
 });
 
+enum CallState {
+  SONIC_IS_DOING_FINAL_TEXT_OUTPUT,
+  SONIC_IS_DOING_SPECULATIVE_TEXT_OUTPUT,
+  USER_IS_DOING_FINAL_TEXT_OUTPUT,
+  DEFAULT,
+}
+
+var callState = CallState.DEFAULT;
+
+function addToHistory(callState: CallState) {
+  return (
+    callState == CallState.USER_IS_DOING_FINAL_TEXT_OUTPUT ||
+    callState == CallState.SONIC_IS_DOING_SPECULATIVE_TEXT_OUTPUT
+  );
+}
+
+function canCut(callState: CallState) {
+  return callState == CallState.SONIC_IS_DOING_FINAL_TEXT_OUTPUT;
+}
+
 export function setUpEventHandlersForChannel(conversation: Conversation) {
-  console.log("conversation", conversation)
+  console.log("conversation", conversation);
   function handleConversationEvent(
     conversation: Conversation,
     eventName: string,
@@ -83,6 +105,41 @@ export function setUpEventHandlersForChannel(conversation: Conversation) {
   ) {
     conversation.setupOnEvent(eventName, (data: SessionEventData) => {
       console[isError ? "error" : "debug"](eventName, data);
+
+      // Capture conversation history for cutover, but ONLY if the generation stage is final.
+      if (eventName === "contentStart" && data.additionalModelFields) {
+        // If USER is talking, add their "final" generated message
+        if (data.role == "USER") {
+          if (conversation.isReadyToPrepareCutover()) {
+            conversation.initiateNextSession();
+          }
+
+          callState = CallState.USER_IS_DOING_FINAL_TEXT_OUTPUT;
+        } else if (data.role == "ASSISTANT") {
+          if (data.additionalModelFields?.includes("SPECULATIVE")) {
+            callState = CallState.SONIC_IS_DOING_SPECULATIVE_TEXT_OUTPUT;
+          } else if (data.additionalModelFields?.includes("FINAL")) {
+            callState = CallState.SONIC_IS_DOING_FINAL_TEXT_OUTPUT;
+          }
+        }
+      }
+      if (
+        eventName === "textOutput" &&
+        data.content &&
+        addToHistory(callState)
+      ) {
+        conversation.conversationHistory.push({
+          content: data.content,
+          role: data.role,
+        });
+      }
+      if (eventName === "contentEnd") {
+        if (canCut(callState)) {
+          conversation.cutOver();
+        }
+
+        callState = CallState.DEFAULT;
+      }
 
       // Broadcast to all clients in this channel
       const clients = channelClients.get(conversation.id) || new Set();
@@ -137,7 +194,11 @@ export function setUpEventHandlersForChannel(conversation: Conversation) {
     }
     // Twilio takes a different format for audio samples.
     if (twilio.isOn)
-      twilio.tryProcessAudioOutput(pcmSamples, clients, conversation.twilioStreamSid!);
+      twilio.tryProcessAudioOutput(
+        pcmSamples,
+        clients,
+        conversation.twilioStreamSid!
+      );
     if (browser.isOn) browser.tryProcessAudioOutput(data, clients);
   });
 }
@@ -148,12 +209,18 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
   console.log(`Client requesting connection to channel: ${conversationId}`);
 
   const sendError = (message: string, details: string) => {
-    const errorMsg = JSON.stringify({ event: "error", data: { message, details } })
-    console.log(`Sending error ${errorMsg}`)
+    const errorMsg = JSON.stringify({
+      event: "error",
+      data: { message, details },
+    });
+    console.log(`Sending error ${errorMsg}`);
     ws.send(JSON.stringify({ event: "error", data: { message, details } }));
   };
 
-  async function tryProcessNovaSonicMessage(msg: any, conversation: Conversation) {
+  async function tryProcessNovaSonicMessage(
+    msg: any,
+    conversation: Conversation
+  ) {
     try {
       const jsonMsg = JSON.parse(msg.toString());
 
@@ -197,7 +264,7 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
       } else {
         console.log(`Creating new channel: ${conversationId}`);
         conversation = bedrockClient.createConversation(conversationId, ws);
-        await conversation.startSession()
+        await conversation.startSession();
 
         channelConversations.set(conversation.id, conversation);
         channelClients.set(conversation.id, new Set());
@@ -209,7 +276,9 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
       clients.add(ws);
       clientChannels.set(ws, conversation.id);
 
-      console.log(`Channel ${conversation.id} has ${clients.size} connected clients`);
+      console.log(
+        `Channel ${conversation.id} has ${clients.size} connected clients`
+      );
 
       // Notify client that connection is successful.
       ws.send(
@@ -234,7 +303,10 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
 
     const conversation = channelConversations.get(conversationId);
     if (!conversation) {
-      sendError("Conversation not found", "No active conversation for this channel");
+      sendError(
+        "Conversation not found",
+        "No active conversation for this channel"
+      );
       return;
     }
 
@@ -289,10 +361,15 @@ wsInstance.app.ws("/socket", (ws: WebSocket, req: Request) => {
             ]);
             console.log(`Successfully cleaned up channel: ${conversationId}`);
           } catch (error) {
-            console.error(`Error cleaning up channel ${conversationId}:`, error);
+            console.error(
+              `Error cleaning up channel ${conversationId}:`,
+              error
+            );
             try {
               bedrockClient.closeSession(conversationId);
-              console.log(`Force closed session for channel: ${conversationId}`);
+              console.log(
+                `Force closed session for channel: ${conversationId}`
+              );
             } catch (e) {
               console.error(
                 `Failed to force close session for channel ${conversationId}:`,
@@ -378,8 +455,7 @@ app.get("/channels", (req: Request, res: Response) => {
       id: conversationId,
       clientCount: clients.size,
       active: bedrockClient.isSessionActive(conversationId),
-    }
-    console.log(379, json)
+    };
     channels.push(json);
   }
   res.status(200).json({ channels });
