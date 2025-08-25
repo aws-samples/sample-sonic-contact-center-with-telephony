@@ -110,12 +110,12 @@ export function setUpEventHandlersForChannel(conversation: Conversation) {
       if (eventName === "contentStart" && data.additionalModelFields) {
         // If USER is talking, add their "final" generated message
         if (data.role == "USER") {
-          callState = CallState.USER_IS_DOING_FINAL_TEXT_OUTPUT;
-        } else if (data.role == "ASSISTANT") {
           if (conversation.isReadyToPrepareCutover()) {
             conversation.initiateNextSession();
           }
 
+          callState = CallState.USER_IS_DOING_FINAL_TEXT_OUTPUT;
+        } else if (data.role == "ASSISTANT") {
           if (data.additionalModelFields?.includes("SPECULATIVE")) {
             callState = CallState.SONIC_IS_DOING_SPECULATIVE_TEXT_OUTPUT;
           } else if (data.additionalModelFields?.includes("FINAL")) {

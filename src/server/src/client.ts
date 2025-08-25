@@ -35,6 +35,7 @@ export class Conversation {
   public twilioStreamSid: string | null;
   public session: StreamSession | null;
   public conversationHistory: Array<{ content: string; role: string }> = [];
+  private useAllStreams: boolean = false;
 
   constructor(
     private client: NovaSonicBidirectionalStreamClient,
@@ -57,6 +58,7 @@ export class Conversation {
   }
 
   async initiateNextSession() {
+    // Stream to all sessions until we cut over.
     const newSessionId = randomUUID();
     console.log(`Creating session ${newSessionId}`);
 
@@ -82,11 +84,12 @@ export class Conversation {
     );
     await this.nextSession.setupStartAudio(DefaultAudioInputConfiguration);
     setUpEventHandlersForChannel(this);
+    this.useAllStreams = true;
   }
 
   cutOver() {
     console.log(
-      `cutting over from ${this.session?.sessionId} to ${this.nextSession.sessionId}`
+      `Cutting over from ${this.session?.sessionId} to ${this.nextSession.sessionId}.`
     );
 
     // Transfer conversation history to the new session
@@ -101,11 +104,13 @@ export class Conversation {
           historyItem.role
         );
       }
+
     }
 
     this.session = this.nextSession;
     this.nextSession = null;
-    console.log("cut complete");
+    this.useAllStreams = false;
+    console.log("Cutover complete.");
   }
 
   public setupOnEvent(
@@ -119,6 +124,7 @@ export class Conversation {
     eventType: string,
     handler: (data: any) => void
   ): StreamSession {
+    if (this.useAllStreams) this.nextSession.onEvent(eventType, handler);
     return this.session.onEvent(eventType, handler);
   }
 
@@ -129,14 +135,17 @@ export class Conversation {
   }
 
   async streamAudio(audioData: Buffer): Promise<void> {
+    if (this.useAllStreams) this.nextSession.streamAudio(audioData)
     return this.session.streamAudio(audioData);
   }
 
   async endAudioContent(): Promise<void> {
+    if (this.useAllStreams) this.nextSession.endAudioContent()
     return this.session.endAudioContent();
   }
 
   async endPrompt(): Promise<void> {
+    if (this.useAllStreams) this.nextSession.endPrompt()
     return this.session.endPrompt();
   }
 
