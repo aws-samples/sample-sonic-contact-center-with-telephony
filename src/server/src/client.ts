@@ -27,6 +27,8 @@ enum cutoverState {
   waiting,
 }
 
+const TIME_TO_PREPARE_CUTOVER_IN_S = 5000;
+
 export class Conversation {
   public id: string;
   private nextSession: StreamSession | null;
@@ -45,13 +47,19 @@ export class Conversation {
 
   getCutoverState() {
     const timeSinceSessionStart = Date.now() - this.session.startTime;
-    if (timeSinceSessionStart > 10000 && this.nextSession) {
+    if (
+      timeSinceSessionStart > TIME_TO_PREPARE_CUTOVER_IN_S + 5000 &&
+      this.nextSession
+    ) {
       return cutoverState.readyToCut;
-    } else if (timeSinceSessionStart > 5000 && !this.nextSession) {
+    } else if (
+      timeSinceSessionStart > TIME_TO_PREPARE_CUTOVER_IN_S &&
+      !this.nextSession
+    ) {
       return cutoverState.readyToPrepare;
-    } else {
-      return cutoverState.waiting;
     }
+
+    return cutoverState.waiting;
   }
 
   async startSession() {
@@ -69,9 +77,9 @@ export class Conversation {
     );
     this.client.initiateSession(this.ws, this, this.nextSession.sessionId);
 
-    await this.setupNextPromptStart();
-    await this.setupNextSystemPrompt(
-      undefined,
+    await this.nextSession.setupPromptStart();
+    await this.nextSession.setupSystemPrompt(
+      DefaultTextConfiguration,
       `You are Telly, an AI assistant having a voice conversation. Keep responses concise and conversational.
           You must always check what the next script item is, and you must always use the script as a starting
           point to decide what to respond the user and what tools to use. You must always rely on your script
@@ -83,7 +91,7 @@ export class Conversation {
           Before every response to the user, you MUST check if you have any messages to pass on to the user.
           `
     );
-    await this.setupNextStartAudio();
+    await this.nextSession.setupStartAudio(DefaultAudioInputConfiguration);
     setUpEventHandlersForChannel(this);
   }
 
@@ -123,23 +131,6 @@ export class Conversation {
     handler: (data: any) => void
   ): StreamSession {
     return this.session.onEvent(eventType, handler);
-  }
-
-  async setupNextPromptStart(): Promise<void> {
-    return this.nextSession.setupPromptStart();
-  }
-
-  async setupNextSystemPrompt(
-    textConfig: typeof DefaultTextConfiguration = DefaultTextConfiguration,
-    systemPromptContent: string = DefaultSystemPrompt
-  ): Promise<void> {
-    return this.nextSession.setupSystemPrompt(textConfig, systemPromptContent);
-  }
-
-  async setupNextStartAudio(
-    audioConfig: typeof DefaultAudioInputConfiguration = DefaultAudioInputConfiguration
-  ): Promise<void> {
-    return this.nextSession.setupStartAudio(audioConfig);
   }
 
   async setupStartAudio(
