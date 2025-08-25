@@ -26,7 +26,7 @@ enum cutoverState {
   waiting,
 }
 
-const TIME_TO_PREPARE_CUTOVER_IN_S = 5000;
+const TIME_TO_PREPARE_CUTOVER_IN_S = 5 * 60 * 1000;  // 5 minutes.
 
 export class Conversation {
   public id: string;
