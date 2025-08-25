@@ -112,6 +112,10 @@ export function setUpEventHandlersForChannel(conversation: Conversation) {
         if (data.role == "USER") {
           callState = CallState.USER_IS_DOING_FINAL_TEXT_OUTPUT;
         } else if (data.role == "ASSISTANT") {
+          if (conversation.isReadyToPrepareCutover()) {
+            conversation.initiateNextSession();
+          }
+
           if (data.additionalModelFields?.includes("SPECULATIVE")) {
             callState = CallState.SONIC_IS_DOING_SPECULATIVE_TEXT_OUTPUT;
           } else if (data.additionalModelFields?.includes("FINAL")) {
@@ -131,7 +135,7 @@ export function setUpEventHandlersForChannel(conversation: Conversation) {
       }
       if (eventName === "contentEnd") {
         if (canCut(callState)) {
-          conversation.cutOver()
+          conversation.cutOver();
         }
 
         callState = CallState.DEFAULT;

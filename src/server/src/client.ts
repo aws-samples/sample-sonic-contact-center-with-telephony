@@ -22,7 +22,6 @@ import { WebSocket } from "ws";
 import { setUpEventHandlersForChannel } from "./server";
 
 enum cutoverState {
-  readyToCut,
   readyToPrepare,
   waiting,
 }
@@ -45,21 +44,12 @@ export class Conversation {
     this.id = randomUUID();
   }
 
-  getCutoverState() {
+  isReadyToPrepareCutover() {
     const timeSinceSessionStart = Date.now() - this.session.startTime;
-    if (
-      timeSinceSessionStart > TIME_TO_PREPARE_CUTOVER_IN_S + 5000 &&
-      this.nextSession
-    ) {
-      return cutoverState.readyToCut;
-    } else if (
+    return (
       timeSinceSessionStart > TIME_TO_PREPARE_CUTOVER_IN_S &&
       !this.nextSession
-    ) {
-      return cutoverState.readyToPrepare;
-    }
-
-    return cutoverState.waiting;
+    )
   }
 
   async startSession() {
@@ -140,10 +130,6 @@ export class Conversation {
   }
 
   async streamAudio(audioData: Buffer): Promise<void> {
-    if (this.getCutoverState() == cutoverState.readyToPrepare) {
-      this.initiateNextSession();
-    }
-
     return this.session.streamAudio(audioData);
   }
 
