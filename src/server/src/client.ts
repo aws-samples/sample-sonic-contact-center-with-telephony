@@ -242,6 +242,7 @@ export class StreamSession {
       ) {
         const audioChunk = this.audioBufferQueue.shift();
         if (audioChunk) {
+          // console.log("219")
           await this.client.streamAudioChunk(this.sessionId, audioChunk);
           processedChunks++;
         }
@@ -641,6 +642,7 @@ export class NovaSonicBidirectionalStreamClient {
 
             try {
               const jsonResponse = JSON.parse(textResponse);
+              console.log(574)
               if (jsonResponse.event?.contentStart) {
                 this.dispatchEvent(
                   sessionId,
@@ -654,6 +656,7 @@ export class NovaSonicBidirectionalStreamClient {
                   jsonResponse.event.textOutput
                 );
               } else if (jsonResponse.event?.audioOutput) {
+                console.log(589)
                 this.dispatchEvent(
                   sessionId,
                   "audioOutput",
@@ -906,6 +909,7 @@ export class NovaSonicBidirectionalStreamClient {
     }
     const base64Data = audioData.toString("base64");
 
+    // console.log("838")
     this.addEventToSessionQueue(sessionId, {
       event: {
         audioInput: {
@@ -1024,11 +1028,14 @@ export class NovaSonicBidirectionalStreamClient {
   }
 
   dispatchEvent(sessionId: string, eventType: string, data: any): void {
+    console.log(960)
     const session = this.activeSessions.get(sessionId);
     if (!session) return;
 
+    console.log(964, session.responseHandlers)
     const handler = session.responseHandlers.get(eventType);
     if (handler) {
+      console.log(966)
       try {
         handler(data);
       } catch (e) {

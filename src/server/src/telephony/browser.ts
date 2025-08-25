@@ -26,6 +26,8 @@ export class BrowserIntegration {
   async tryProcessAudioOutput(data: any, clients) {
     if (!this.isOn) return
 
+    console.log(29)
+
     const message = JSON.stringify({ event: { audioOutput: { ...data } } });
     clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) client.send(message);

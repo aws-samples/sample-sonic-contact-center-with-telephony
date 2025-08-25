@@ -456,7 +456,6 @@ app.get("/channels", (req: Request, res: Response) => {
       clientCount: clients.size,
       active: bedrockClient.isSessionActive(conversationId),
     };
-    console.log(379, json);
     channels.push(json);
   }
   res.status(200).json({ channels });
