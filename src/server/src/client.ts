@@ -47,9 +47,8 @@ export class Conversation {
   isReadyToPrepareCutover() {
     const timeSinceSessionStart = Date.now() - this.session.startTime;
     return (
-      timeSinceSessionStart > TIME_TO_PREPARE_CUTOVER_IN_S &&
-      !this.nextSession
-    )
+      timeSinceSessionStart > TIME_TO_PREPARE_CUTOVER_IN_S && !this.nextSession
+    );
   }
 
   async startSession() {
