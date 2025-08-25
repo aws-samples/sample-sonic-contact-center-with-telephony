@@ -19,7 +19,13 @@ import {
 import { SessionData, NovaSonicBidirectionalStreamClientConfig } from "./types";
 import { ToolRegistry } from "./tools/ToolRegistry";
 import { WebSocket } from "ws";
-import { setUpEventHandlersForChannel } from "./server"
+import { setUpEventHandlersForChannel } from "./server";
+
+enum cutoverState {
+  readyToCut,
+  readyToPrepare,
+  waiting,
+}
 
 export class Conversation {
   public id: string;
@@ -27,7 +33,7 @@ export class Conversation {
   public sessionId: string;
   public twilioStreamSid: string | null;
   public session: StreamSession | null;
-  public conversationHistory: Array<{content: string, role: string}> = [];
+  public conversationHistory: Array<{ content: string; role: string }> = [];
 
   constructor(
     private client: NovaSonicBidirectionalStreamClient,
@@ -40,11 +46,11 @@ export class Conversation {
   getCutoverState() {
     const timeSinceSessionStart = Date.now() - this.session.startTime;
     if (timeSinceSessionStart > 10000 && this.nextSession) {
-      return "READY TO CUT";
+      return cutoverState.readyToCut;
     } else if (timeSinceSessionStart > 5000 && !this.nextSession) {
-      return "READY TO PREPARE";
+      return cutoverState.readyToPrepare;
     } else {
-      return "WAITING";
+      return cutoverState.waiting;
     }
   }
 
@@ -55,7 +61,7 @@ export class Conversation {
 
   async initiateNextSession() {
     const newSessionId = randomUUID();
-    console.log(`Creating session ${newSessionId}`)
+    console.log(`Creating session ${newSessionId}`);
 
     this.nextSession = this.client.createStreamSession(
       newSessionId,
@@ -82,11 +88,15 @@ export class Conversation {
   }
 
   cutOver() {
-    console.log(`cutting over from ${this.session?.sessionId} to ${this.nextSession.sessionId}`)
+    console.log(
+      `cutting over from ${this.session?.sessionId} to ${this.nextSession.sessionId}`
+    );
 
     // Transfer conversation history to the new session
     if (this.conversationHistory.length > 0) {
-      console.log(`Transferring ${this.conversationHistory.length} history items to new session`);
+      console.log(
+        `Transferring ${this.conversationHistory.length} history items to new session`
+      );
       for (const historyItem of this.conversationHistory) {
         this.nextSession.setupHistoryForConversationResumtion(
           undefined,
@@ -101,11 +111,17 @@ export class Conversation {
     console.log("cut complete");
   }
 
-  public setupOnEvent(eventType: string, handler: (data: any) => void): StreamSession {
+  public setupOnEvent(
+    eventType: string,
+    handler: (data: any) => void
+  ): StreamSession {
     return this.nextSession.onEvent(eventType, handler);
   }
 
-  public onEvent(eventType: string, handler: (data: any) => void): StreamSession {
+  public onEvent(
+    eventType: string,
+    handler: (data: any) => void
+  ): StreamSession {
     return this.session.onEvent(eventType, handler);
   }
 
@@ -133,15 +149,8 @@ export class Conversation {
   }
 
   async streamAudio(audioData: Buffer): Promise<void> {
-    switch (this.getCutoverState()) {
-      case "READY TO CUT":
-        this.cutOver();
-        break;
-      case "READY TO PREPARE":
-        this.initiateNextSession();
-        break;
-      default:
-        break;
+    if (this.getCutoverState() == cutoverState.readyToPrepare) {
+      this.initiateNextSession();
     }
 
     return this.session.streamAudio(audioData);
@@ -177,8 +186,14 @@ export class StreamSession {
   public async setupHistoryForConversationResumtion(
     textConfig: typeof DefaultTextConfiguration = DefaultTextConfiguration,
     content: string,
-    role: string): Promise<void> {
-    this.client.setupHistoryEventForConversationResumption(this.sessionId, textConfig, content, role);
+    role: string
+  ): Promise<void> {
+    this.client.setupHistoryEventForConversationResumption(
+      this.sessionId,
+      textConfig,
+      content,
+      role
+    );
   }
 
   public onEvent(
@@ -312,7 +327,8 @@ export class NovaSonicBidirectionalStreamClient {
     };
   }
 
-  public setupHistoryEventForConversationResumption(sessionId: string,
+  public setupHistoryEventForConversationResumption(
+    sessionId: string,
     textConfig: typeof DefaultTextConfiguration = DefaultTextConfiguration,
     content: string,
     role: string
@@ -331,7 +347,7 @@ export class NovaSonicBidirectionalStreamClient {
           interactive: true,
           textInputConfiguration: textConfig,
         },
-      }
+      },
     });
 
     this.addEventToSessionQueue(sessionId, {
@@ -342,7 +358,7 @@ export class NovaSonicBidirectionalStreamClient {
           content: content,
           role: role,
         },
-      }
+      },
     });
 
     this.addEventToSessionQueue(sessionId, {
@@ -351,7 +367,7 @@ export class NovaSonicBidirectionalStreamClient {
           promptName: session.promptName,
           contentName: textPromptID,
         },
-      }
+      },
     });
   }
 
@@ -779,7 +795,7 @@ export class NovaSonicBidirectionalStreamClient {
       }
     }
 
-    console.log(`pushing event to ${sessionId}`)
+    console.log(`pushing event to ${sessionId}`);
     this.updateSessionActivity(sessionId);
     // console.log(716, session == null)
     session.queue.push(event);
